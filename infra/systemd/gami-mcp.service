@@ -1,0 +1,16 @@
+[Unit]
+Description=GAMI MCP Server
+After=gami-api.service
+
+[Service]
+Type=simple
+User=ai
+Group=ai
+WorkingDirectory=/opt/gami
+Environment=PYTHONPATH=/opt/gami
+ExecStart=/usr/local/anaconda3/bin/python -m mcp.server --port 9001
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

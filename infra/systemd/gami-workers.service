@@ -1,0 +1,16 @@
+[Unit]
+Description=GAMI Celery Workers
+After=network.target postgresql.service redis-gami.service
+
+[Service]
+Type=simple
+User=ai
+Group=ai
+WorkingDirectory=/opt/gami
+Environment=PYTHONPATH=/opt/gami
+ExecStart=/usr/local/anaconda3/bin/celery -A workers.celery_app worker --loglevel=info --concurrency=4
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

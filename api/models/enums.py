@@ -1,0 +1,132 @@
+from enum import Enum
+
+class SourceType(str, Enum):
+    BOOK = "book"
+    PDF = "pdf"
+    CHAT_THREAD = "chat_thread"
+    CONVERSATION_SESSION = "conversation_session"
+    TRANSCRIPT = "transcript"
+    EMAIL_THREAD = "email_thread"
+    ARTICLE = "article"
+    WIKI_PAGE = "wiki_page"
+    CODE_REPO_DOC = "code_repo_doc"
+    MARKDOWN = "markdown"
+    HTML = "html"
+    SQLITE_MEMORY = "sqlite_memory"
+    CRON_LOG = "cron_log"
+
+class SegmentType(str, Enum):
+    CHAPTER = "chapter"
+    SECTION = "section"
+    SUBSECTION = "subsection"
+    PARAGRAPH = "paragraph"
+    MESSAGE = "message"
+    TURN = "turn"
+    CHUNK = "chunk"
+    QUOTE_SPAN = "quote_span"
+    TOPIC_EPISODE = "topic_episode"
+    CODE_BLOCK = "code_block"
+    TOOL_CALL = "tool_call"
+    TOOL_RESULT = "tool_result"
+
+class EntityType(str, Enum):
+    PERSON = "person"
+    PLACE = "place"
+    ORGANIZATION = "organization"
+    PRODUCT = "product"
+    CONCEPT = "concept"
+    THEOREM = "theorem"
+    TOPIC = "topic"
+    WORK = "work"
+    EVENT_CLASS = "event_class"
+    TECHNOLOGY = "technology"
+    SERVICE = "service"
+    INFRASTRUCTURE = "infrastructure"
+    CREDENTIAL = "credential"
+
+class MemoryType(str, Enum):
+    PREFERENCE = "preference"
+    PROJECT = "project"
+    CORRECTION = "correction"
+    IDENTITY = "identity"
+    POLICY = "policy"
+    TASK = "task"
+    RELATIONSHIP = "relationship"
+    OPEN_LOOP = "open_loop"
+    FACT = "fact"
+    STYLE = "style"
+    BIOGRAPHY = "biography"
+    CONSTRAINT = "constraint"
+
+class MemoryStatus(str, Enum):
+    PROVISIONAL = "provisional"
+    ACTIVE = "active"
+    CONFIRMED = "confirmed"
+    STALE = "stale"
+    SUPERSEDED = "superseded"
+    ARCHIVED = "archived"
+
+class RelationType(str, Enum):
+    MENTIONS = "MENTIONS"
+    DERIVED_FROM = "DERIVED_FROM"
+    SUMMARIZES = "SUMMARIZES"
+    PART_OF = "PART_OF"
+    INSTANCE_OF = "INSTANCE_OF"
+    RELATED_TO = "RELATED_TO"
+    ALIAS_OF = "ALIAS_OF"
+    SUPPORTS = "SUPPORTS"
+    CONTRADICTS = "CONTRADICTS"
+    CAUSED_BY = "CAUSED_BY"
+    PRECEDES = "PRECEDES"
+    FOLLOWS = "FOLLOWS"
+    ABOUT = "ABOUT"
+    PREFERENCE_OF = "PREFERENCE_OF"
+    CORRECTION_OF = "CORRECTION_OF"
+    UPDATED_BY = "UPDATED_BY"
+    SUPERSEDED_BY = "SUPERSEDED_BY"
+    LOCATED_IN = "LOCATED_IN"
+    AUTHORED_BY = "AUTHORED_BY"
+    USES = "USES"
+    DEFINED_BY = "DEFINED_BY"
+    ELABORATES = "ELABORATES"
+
+class TenantType(str, Enum):
+    AGENT = "agent"
+    HUMAN = "human"
+    SYSTEM = "system"
+    BACKGROUND_WORKER = "background_worker"
+    SHARED = "shared"
+
+class Permission(str, Enum):
+    READ = "read"
+    WRITE = "write"
+    ADMIN = "admin"
+    PROPOSE_ONLY = "propose_only"
+
+class StorageTier(str, Enum):
+    HOT = "hot"
+    WARM = "warm"
+    COLD = "cold"
+
+class JobStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+class Modality(str, Enum):
+    ASSERTED = "asserted"
+    TENTATIVE = "tentative"
+    NEGATED = "negated"
+    HYPOTHETICAL = "hypothetical"
+
+class RetrievalMode(str, Enum):
+    AUTO = "auto"
+    FACTUAL = "factual"
+    SYNTHESIS = "synthesis"
+    TIMELINE = "timeline"
+    ENTITY_CENTRIC = "entity_centric"
+    ASSISTANT_MEMORY = "assistant_memory"
+    VERIFICATION = "verification"
+    REPORT = "report"
