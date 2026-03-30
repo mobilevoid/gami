@@ -498,6 +498,53 @@ async def recall(
         except Exception as exc:
             logger.warning("Claim search failed: %s", exc)
 
+        # ---- 4c2. Graph expansion: follow relations from found entities ----
+        found_entity_ids = [item.item_id for item in evidence_items if item.item_type == "entity"]
+        if found_entity_ids:
+            try:
+                rel_rows = await db.execute(
+                    text("""
+                        SELECT DISTINCT e.entity_id, e.canonical_name, e.entity_type,
+                               e.description, r.relation_type,
+                               1 - (e.embedding <=> CAST(:vec AS vector)) as similarity
+                        FROM relations r
+                        JOIN entities e ON (
+                            (r.to_node_id = e.entity_id AND r.from_node_id = ANY(:eids))
+                            OR (r.from_node_id = e.entity_id AND r.to_node_id = ANY(:eids))
+                        )
+                        WHERE e.embedding IS NOT NULL
+                        AND e.status = 'active'
+                        AND e.entity_id != ALL(:eids)
+                        AND r.status = 'active'
+                        ORDER BY similarity DESC
+                        LIMIT 5
+                    """),
+                    {"vec": vec_str, "eids": found_entity_ids},
+                )
+                for row in rel_rows:
+                    sim = float(row.similarity) if row.similarity else 0.0
+                    if sim < 0.2:
+                        continue
+                    entity_text = f"{row.canonical_name} ({row.entity_type}): {row.description or ''} [related via {row.relation_type}]"
+                    evidence_items.append(EvidenceItem(
+                        item_id=row.entity_id,
+                        item_type="entity",
+                        text=entity_text,
+                        score=sim * 1.1,  # Slight boost for graph-connected
+                        importance=0.6,
+                        recency_score=0.7,
+                        token_count=count_tokens(entity_text),
+                        metadata={
+                            "entity_type": row.entity_type,
+                            "canonical_name": row.canonical_name,
+                            "source_type": "graph_expansion",
+                            "relation_type": row.relation_type,
+                            "knowledge_tier": _tenant_tiers.get("claude-opus", "operational"),
+                        },
+                    ))
+            except Exception as exc:
+                logger.debug("Graph expansion failed (non-critical): %s", exc)
+
         # ---- 4d. Search segments (standard hybrid search) ----
         results = await hybrid_search(
             db, query, query_embedding, tids,
