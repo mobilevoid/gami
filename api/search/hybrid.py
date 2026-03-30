@@ -27,7 +27,9 @@ async def vector_search(
             SELECT segment_id, source_id, owner_tenant_id,
                    segment_type, title_or_heading, text, token_count,
                    speaker_role, speaker_name, message_timestamp,
-                   1 - (embedding <=> CAST(:vec AS vector)) AS similarity
+                   1 - (embedding <=> CAST(:vec AS vector)) AS similarity,
+                   COALESCE(retrieval_count, 0) AS retrieval_count,
+                   last_retrieved_at
             FROM segments
             WHERE owner_tenant_id = ANY(:tids)
               AND embedding IS NOT NULL
@@ -50,6 +52,8 @@ async def vector_search(
             "speaker_name": r[8],
             "message_timestamp": r[9].isoformat() if r[9] else None,
             "similarity": float(r[10]),
+            "retrieval_count": int(r[11]),
+            "last_retrieved_at": r[12].isoformat() if r[12] else None,
             "search_type": "vector",
         }
         for r in rows
@@ -68,14 +72,16 @@ async def lexical_search(
             SELECT segment_id, source_id, owner_tenant_id,
                    segment_type, title_or_heading, text, token_count,
                    speaker_role, speaker_name, message_timestamp,
-                   ts_rank(lexical_tsv, plainto_tsquery('english', :query)) AS rank
+                   ts_rank(lexical_tsv, plainto_tsquery(CAST(:lang AS regconfig), :query)) AS rank,
+                   COALESCE(retrieval_count, 0) AS retrieval_count,
+                   last_retrieved_at
             FROM segments
-            WHERE lexical_tsv @@ plainto_tsquery('english', :query)
+            WHERE lexical_tsv @@ plainto_tsquery(CAST(:lang AS regconfig), :query)
               AND owner_tenant_id = ANY(:tids)
             ORDER BY rank DESC
             LIMIT :lim
         """),
-        {"query": query, "tids": tenant_ids, "lim": limit},
+        {"lang": "english", "query": query, "tids": tenant_ids, "lim": limit},
     )
     rows = result.fetchall()
     return [
@@ -91,6 +97,8 @@ async def lexical_search(
             "speaker_name": r[8],
             "message_timestamp": r[9].isoformat() if r[9] else None,
             "rank": float(r[10]),
+            "retrieval_count": int(r[11]),
+            "last_retrieved_at": r[12].isoformat() if r[12] else None,
             "search_type": "lexical",
         }
         for r in rows

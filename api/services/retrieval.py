@@ -3,7 +3,9 @@
 Orchestrates query classification, hybrid search, scoring, budget management,
 and citation assembly for the recall pipeline.
 """
+import asyncio
 import logging
+import math
 import time
 from datetime import datetime, timezone
 from typing import Optional
@@ -30,8 +32,51 @@ from api.services.query_classifier import (
     classify_query,
 )
 from api.services.db import AsyncSessionLocal
+from api.services.hot_cache import search_hot_cache
 
 logger = logging.getLogger("gami.services.retrieval")
+
+
+# ---------------------------------------------------------------------------
+# Access tracking
+# ---------------------------------------------------------------------------
+
+async def _track_access(segment_ids: list[str]):
+    """Background task: increment retrieval_count and update last_retrieved_at."""
+    if not segment_ids:
+        return
+    try:
+        async with AsyncSessionLocal() as db:
+            await db.execute(
+                text("""
+                    UPDATE segments
+                    SET retrieval_count = COALESCE(retrieval_count, 0) + 1,
+                        last_retrieved_at = NOW()
+                    WHERE segment_id = ANY(:ids)
+                """),
+                {"ids": segment_ids},
+            )
+            await db.commit()
+    except Exception as exc:
+        logger.warning("Access tracking failed: %s", exc)
+
+
+def _hot_score(retrieval_count: int, last_retrieved_at) -> float:
+    """Compute hot score from access frequency and recency."""
+    if retrieval_count is None or retrieval_count == 0:
+        return 0.0
+    days_since = 30.0  # default if no timestamp
+    if last_retrieved_at:
+        try:
+            if isinstance(last_retrieved_at, str):
+                ts = datetime.fromisoformat(last_retrieved_at.replace("Z", "+00:00"))
+            else:
+                ts = last_retrieved_at
+            days_since = max(0.0, (datetime.now(timezone.utc) - ts).total_seconds() / 86400)
+        except Exception:
+            pass
+    recency_factor = 1.0 / (1.0 + days_since * 0.1)
+    return math.log(retrieval_count + 1) * recency_factor
 
 
 class EvidenceResult(BaseModel):
@@ -183,6 +228,9 @@ async def recall(
     """
     t_start = time.monotonic()
     tids = tenant_ids or [tenant_id]
+    # Always include 'shared' tenant so shared knowledge is searchable
+    if "shared" not in tids:
+        tids = list(tids) + ["shared"]
 
     # 1. Classify query
     t_class = time.monotonic()
@@ -196,10 +244,18 @@ async def recall(
         classification = await classify_query(query)
     classification_ms = (time.monotonic() - t_class) * 1000
 
-    # 2. Embed query
+    # 2. Check Redis hot cache first (fast path)
+    hot_hits = []
+    try:
+        for tid in tids:
+            hot_hits.extend(search_hot_cache(tid, query, limit=5))
+    except Exception as exc:
+        logger.debug("Hot cache check failed (non-critical): %s", exc)
+
+    # 3. Embed query
     query_embedding = await embed_text(query)
 
-    # 3. Parallel anchor retrieval (vector + lexical via hybrid)
+    # 4. Parallel anchor retrieval (vector + lexical via hybrid)
     t_search = time.monotonic()
 
     # Adjust search limits based on mode
@@ -218,12 +274,22 @@ async def recall(
         )
         search_ms = (time.monotonic() - t_search) * 1000
 
-        # 4. Score results
+        # 4. Filter out noise: skip segments with < 50 chars of text
+        results = [r for r in results if len(r.get("text", "")) >= 50]
+
+        # 5. Score results (with hot score boost)
         evidence_items: list[EvidenceItem] = []
         for r in results:
             relevance, importance, recency = _compute_evidence_score(
                 r, classification.mode
             )
+            # Apply hot score boost from access tracking
+            hot = _hot_score(
+                r.get("retrieval_count", 0),
+                r.get("last_retrieved_at"),
+            )
+            relevance = relevance * (1.0 + 0.15 * hot)
+
             token_count = r.get("token_count") or count_tokens(r.get("text", ""))
 
             item = EvidenceItem(
@@ -295,6 +361,11 @@ async def recall(
 
     total_ms = (time.monotonic() - t_start) * 1000
 
+    # Fire-and-forget access tracking for returned segments
+    returned_ids = [ev.item_id for ev in evidence_results]
+    if returned_ids:
+        asyncio.get_event_loop().create_task(_track_access(returned_ids))
+
     return RecallResult(
         query=query,
         mode=classification.mode.value,
@@ -325,6 +396,8 @@ async def verify_claim(
     evidence. Verdict is based on score distribution.
     """
     tids = tenant_ids or [tenant_id]
+    if "shared" not in tids:
+        tids = list(tids) + ["shared"]
     query_embedding = await embed_text(claim_text)
 
     async with AsyncSessionLocal() as db:

@@ -52,7 +52,7 @@ def extract_entities(
 ) -> list[dict]:
     """Extract entities from text, deduplicate, store, return entity dicts."""
     # Truncate very long text for the LLM
-    input_text = text_content[:6000] if len(text_content) > 6000 else text_content
+    input_text = text_content[:3000] if len(text_content) > 3000 else text_content
 
     template = jinja_env.get_template("entity_extraction.j2")
     prompt = template.render(text=input_text)
@@ -63,7 +63,7 @@ def extract_entities(
     )
 
     try:
-        raw = call_vllm_sync(prompt, system_prompt=system_prompt, max_tokens=4096, temperature=0.1)
+        raw = call_vllm_sync(prompt, system_prompt=system_prompt, max_tokens=2048, temperature=0.1)
         entities_raw = parse_json_from_llm(raw)
     except Exception as exc:
         logger.error("Entity extraction LLM call failed: %s", exc)
@@ -190,7 +190,7 @@ def extract_claims(
     entity_map: Optional[dict] = None,
 ) -> list[dict]:
     """Extract factual claims from text, store them, return claim dicts."""
-    input_text = text_content[:6000] if len(text_content) > 6000 else text_content
+    input_text = text_content[:3000] if len(text_content) > 3000 else text_content
 
     template = jinja_env.get_template("claim_extraction.j2")
     prompt = template.render(text=input_text)
@@ -201,7 +201,7 @@ def extract_claims(
     )
 
     try:
-        raw = call_vllm_sync(prompt, system_prompt=system_prompt, max_tokens=4096, temperature=0.1)
+        raw = call_vllm_sync(prompt, system_prompt=system_prompt, max_tokens=2048, temperature=0.1)
         claims_raw = parse_json_from_llm(raw)
     except Exception as exc:
         logger.error("Claim extraction LLM call failed: %s", exc)
@@ -313,7 +313,7 @@ def extract_relations(
     if len(entities) < 2:
         return []
 
-    input_text = text_content[:6000] if len(text_content) > 6000 else text_content
+    input_text = text_content[:3000] if len(text_content) > 3000 else text_content
 
     template = jinja_env.get_template("relation_extraction.j2")
     prompt = template.render(text=input_text, entities=entities)
@@ -324,7 +324,7 @@ def extract_relations(
     )
 
     try:
-        raw = call_vllm_sync(prompt, system_prompt=system_prompt, max_tokens=4096, temperature=0.1)
+        raw = call_vllm_sync(prompt, system_prompt=system_prompt, max_tokens=2048, temperature=0.1)
         rels_raw = parse_json_from_llm(raw)
     except Exception as exc:
         logger.error("Relation extraction LLM call failed: %s", exc)
@@ -439,7 +439,7 @@ def extract_events(
     entity_map: Optional[dict] = None,
 ) -> list[dict]:
     """Extract events from text, store them, return event dicts."""
-    input_text = text_content[:6000] if len(text_content) > 6000 else text_content
+    input_text = text_content[:3000] if len(text_content) > 3000 else text_content
 
     template = jinja_env.get_template("event_extraction.j2")
     prompt = template.render(text=input_text)
@@ -450,7 +450,7 @@ def extract_events(
     )
 
     try:
-        raw = call_vllm_sync(prompt, system_prompt=system_prompt, max_tokens=4096, temperature=0.1)
+        raw = call_vllm_sync(prompt, system_prompt=system_prompt, max_tokens=2048, temperature=0.1)
         events_raw = parse_json_from_llm(raw)
     except Exception as exc:
         logger.error("Event extraction LLM call failed: %s", exc)
