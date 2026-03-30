@@ -24,8 +24,10 @@ from parsers.chunker import chunk_segments
 
 logger = logging.getLogger(__name__)
 
-# Minimum characters per page to consider text extraction successful
-MIN_CHARS_PER_PAGE = 50
+# Minimum characters per page to consider text extraction successful.
+# Set high enough to avoid OCR'ing pages that just have headers/footers.
+# Most book pages have 1000+ chars. Only OCR if we get very little text.
+MIN_CHARS_PER_PAGE = 200
 
 # Try importing PDF libraries
 try:
@@ -345,8 +347,13 @@ class PdfParser(BaseParser):
 
             # Step 2: Check if OCR is needed
             if _page_needs_ocr(text, page):
-                # Try doctr GPU OCR first
-                if HAS_DOCTR:
+                # Try pdfplumber first (fast, no model loading)
+                plumber_text = _extract_with_pdfplumber(file_path, page_num)
+                if len(plumber_text) > len(text):
+                    text = plumber_text
+
+                # If still sparse and GPU OCR available, use doctr
+                if len(text.strip()) < MIN_CHARS_PER_PAGE and HAS_DOCTR and HAS_DOCTR_GPU:
                     img_bytes = _ocr_page_fitz(page)
                     if img_bytes:
                         ocr_text = _ocr_page_doctr(img_bytes)
@@ -354,11 +361,10 @@ class PdfParser(BaseParser):
                             text = ocr_text
                             ocr_pages += 1
 
-                # Fallback to pdfplumber
+                # If still no text, flag for future OCR (don't block on CPU OCR)
                 if len(text.strip()) < MIN_CHARS_PER_PAGE:
-                    plumber_text = _extract_with_pdfplumber(file_path, page_num)
-                    if len(plumber_text) > len(text):
-                        text = plumber_text
+                    text = f"[OCR_NEEDED: page {page_num + 1} — scanned image, text extraction failed]"
+                    ocr_pages += 1
 
             # Step 3: Extract images and insert placeholders
             images = _extract_images_from_page(page, page_num + 1)
