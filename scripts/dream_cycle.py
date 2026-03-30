@@ -115,7 +115,7 @@ def dream_extract(max_segments=50):
             AND (s.text ILIKE '%CT%' OR s.text ILIKE '%192.168%' OR s.text ILIKE '%pfSense%'
                  OR s.text ILIKE '%backup%' OR s.text ILIKE '%server%' OR s.text ILIKE '%install%'
                  OR s.text ILIKE '%deploy%' OR s.text ILIKE '%config%')
-            ORDER BY random()
+            ORDER BY s.created_at DESC
             LIMIT :lim
         """), {"tid": TENANT, "lim": max_segments}).fetchall()
 
@@ -199,7 +199,7 @@ def dream_summarize(max_sources=10):
             AND s.source_type IN ('markdown', 'conversation_session')
             GROUP BY s.source_id, s.title
             HAVING count(seg.segment_id) BETWEEN 3 AND 100
-            ORDER BY count(seg.segment_id) DESC
+            ORDER BY s.ingested_at DESC
             LIMIT :lim
         """), {"tid": TENANT, "lim": max_sources}).fetchall()
 
@@ -303,6 +303,190 @@ def dream_resolve(max_pairs=20):
         conn.commit()
         log.info(f"  Created {resolved} merge proposals")
         return resolved
+
+# ============================================================
+# Phase 3.5: Contradiction Detection & Knowledge Reconciliation
+# ============================================================
+def dream_reconcile(max_checks=30):
+    """Compare new knowledge against old, detect contradictions, propose supersessions."""
+    log.info("=== Dream Phase 3.5: Knowledge Reconciliation ===")
+
+    with engine.connect() as conn:
+        # Find claims that share the same subject + predicate but have different objects
+        conflicts = conn.execute(text("""
+            SELECT a.claim_id as old_id, a.summary_text as old_text, a.confidence as old_conf,
+                   a.created_at as old_date,
+                   b.claim_id as new_id, b.summary_text as new_text, b.confidence as new_conf,
+                   b.created_at as new_date,
+                   a.subject_entity_id, a.predicate
+            FROM claims a
+            JOIN claims b ON a.subject_entity_id = b.subject_entity_id
+                AND a.predicate = b.predicate
+                AND a.claim_id != b.claim_id
+                AND a.status = 'active' AND b.status = 'active'
+                AND a.owner_tenant_id = :tid AND b.owner_tenant_id = :tid
+            WHERE a.created_at < b.created_at
+            AND a.contradiction_group_id IS NULL
+            AND b.contradiction_group_id IS NULL
+            LIMIT :lim
+        """), {"tid": TENANT, "lim": max_checks}).fetchall()
+
+        log.info(f"  Found {len(conflicts)} potential contradictions")
+        reconciled = 0
+
+        for row in conflicts:
+            if should_stop():
+                break
+
+            old_text = row.old_text or ""
+            new_text = row.new_text or ""
+
+            # Quick check: if they say the same thing, skip
+            if old_text.strip() == new_text.strip():
+                continue
+
+            # Use vLLM to determine if these actually contradict
+            prompt = f"""Do these two claims contradict each other?
+
+Older claim: {old_text}
+Newer claim: {new_text}
+
+Reply with ONLY one of:
+- "CONTRADICT" if they disagree on the same fact
+- "SUPERSEDE" if the newer one updates/replaces the older one
+- "COMPATIBLE" if they can both be true
+- "DUPLICATE" if they say the same thing differently
+
+Answer:"""
+
+            response = call_vllm(prompt, max_tokens=50)
+            if not response:
+                continue
+
+            verdict = response.strip().upper()
+
+            if "CONTRADICT" in verdict or "SUPERSEDE" in verdict:
+                # Create a contradiction group
+                group_id = gen_id("CGRP", f"{row.old_id}_{row.new_id}")
+
+                # Mark both claims with the group
+                conn.execute(text("""
+                    UPDATE claims SET contradiction_group_id = :gid WHERE claim_id = :cid
+                """), {"gid": group_id, "cid": row.old_id})
+                conn.execute(text("""
+                    UPDATE claims SET contradiction_group_id = :gid WHERE claim_id = :cid
+                """), {"gid": group_id, "cid": row.new_id})
+
+                # If SUPERSEDE, propose marking the older one as superseded
+                if "SUPERSEDE" in verdict:
+                    prop_id = gen_id("PROP", f"supersede_{row.old_id}_{row.new_id}")
+                    is_credential = any(kw in old_text.lower() for kw in
+                                       ["password", "credential", "token", "key", "pass"])
+                    priority = "high" if is_credential else "normal"
+
+                    conn.execute(text("""
+                        INSERT INTO proposed_changes (proposal_id, proposer_tenant_id, change_type,
+                            target_type, target_id, proposed_state_json, reason, confidence, status)
+                        VALUES (:pid, 'background-worker', 'supersede_claim', 'claim', :old_id,
+                            :state, :reason, :conf, 'pending')
+                        ON CONFLICT (proposal_id) DO NOTHING
+                    """), {
+                        "pid": prop_id, "old_id": row.old_id,
+                        "state": json.dumps({
+                            "superseded_by": row.new_id,
+                            "old_text": old_text[:200],
+                            "new_text": new_text[:200],
+                            "priority": priority,
+                        }),
+                        "reason": f"Newer claim supersedes older: '{old_text[:80]}' → '{new_text[:80]}'",
+                        "conf": float(row.new_conf) if row.new_conf else 0.7,
+                    })
+                    log.info(f"  SUPERSEDE [{priority}]: '{old_text[:60]}' → '{new_text[:60]}'")
+                else:
+                    log.info(f"  CONTRADICT: '{old_text[:60]}' vs '{new_text[:60]}'")
+
+                reconciled += 1
+
+            elif "DUPLICATE" in verdict:
+                # Merge: mark older as superseded by newer
+                conn.execute(text("""
+                    UPDATE claims SET superseded_by_id = :new_id, status = 'superseded'
+                    WHERE claim_id = :old_id
+                """), {"new_id": row.new_id, "old_id": row.old_id})
+                log.info(f"  DUPLICATE merged: '{old_text[:60]}'")
+                reconciled += 1
+
+            conn.commit()
+            time.sleep(3)  # Rate limit vLLM
+
+        log.info(f"  Reconciled {reconciled} conflicts")
+        return reconciled
+
+    # Also check memories against claims for consistency
+def dream_verify_memories(max_checks=20):
+    """Verify that durable memories are still consistent with latest claims."""
+    log.info("=== Dream Phase 3.6: Memory Verification ===")
+
+    with engine.connect() as conn:
+        # Find credential memories and check if matching claims have been updated
+        cred_memories = conn.execute(text("""
+            SELECT m.memory_id, m.normalized_text, m.subject_id, m.updated_at
+            FROM assistant_memories m
+            WHERE m.sensitivity = 'credential'
+            AND m.status = 'active'
+            AND m.owner_tenant_id = :tid
+            ORDER BY m.updated_at ASC
+            LIMIT :lim
+        """), {"tid": TENANT, "lim": max_checks}).fetchall()
+
+        verified = stale = 0
+
+        for mem_id, mem_text, subject, updated_at in cred_memories:
+            if should_stop():
+                break
+
+            # Find recent claims about the same subject
+            recent_claims = conn.execute(text("""
+                SELECT c.summary_text, c.created_at
+                FROM claims c
+                JOIN entities e ON c.subject_entity_id = e.entity_id
+                WHERE (e.canonical_name ILIKE :subj OR e.canonical_name ILIKE :subj2)
+                AND c.status = 'active'
+                AND c.predicate ILIKE '%credential%' OR c.predicate ILIKE '%password%' OR c.predicate ILIKE '%pass%'
+                ORDER BY c.created_at DESC
+                LIMIT 3
+            """), {"subj": f"%{subject}%", "subj2": subject}).fetchall()
+
+            if recent_claims:
+                latest_claim = recent_claims[0]
+                if latest_claim.created_at and updated_at and latest_claim.created_at > updated_at:
+                    # Claim is newer than memory — memory might be stale
+                    log.info(f"  STALE? Memory '{mem_text[:50]}' older than claim '{latest_claim.summary_text[:50]}'")
+                    stale += 1
+
+                    # Propose memory update
+                    prop_id = gen_id("PROP", f"stale_mem_{mem_id}")
+                    conn.execute(text("""
+                        INSERT INTO proposed_changes (proposal_id, proposer_tenant_id, change_type,
+                            target_type, target_id, proposed_state_json, reason, confidence, status)
+                        VALUES (:pid, 'background-worker', 'update_memory', 'assistant_memory', :mid,
+                            :state, :reason, 0.6, 'pending')
+                        ON CONFLICT (proposal_id) DO NOTHING
+                    """), {
+                        "pid": prop_id, "mid": mem_id,
+                        "state": json.dumps({
+                            "current_text": mem_text[:200],
+                            "newer_claim": latest_claim.summary_text[:200],
+                        }),
+                        "reason": f"Memory may be outdated — newer claim found",
+                    })
+                else:
+                    verified += 1
+
+        conn.commit()
+        log.info(f"  Verified {verified}, flagged {stale} potentially stale memories")
+        return {"verified": verified, "stale": stale}
+
 
 # ============================================================
 # Phase 4: Build Relations Between Co-occurring Entities
@@ -464,6 +648,8 @@ def dream(duration=None, phase=None, check_idle=False):
         ("extract", dream_extract),
         ("summarize", dream_summarize),
         ("resolve", dream_resolve),
+        ("reconcile", dream_reconcile),
+        ("verify_memories", dream_verify_memories),
         ("relate", dream_relate),
         ("score", dream_score),
         ("embed", dream_embed),
@@ -502,7 +688,7 @@ def dream(duration=None, phase=None, check_idle=False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GAMI Dream Cycle")
-    parser.add_argument("--phase", choices=["extract", "summarize", "resolve", "relate", "score", "embed"])
+    parser.add_argument("--phase", choices=["extract", "summarize", "resolve", "reconcile", "verify_memories", "relate", "score", "embed"])
     parser.add_argument("--duration", type=int, help="Max duration in seconds")
     parser.add_argument("--check-idle", action="store_true", help="Only run if vLLM is idle")
     args = parser.parse_args()
