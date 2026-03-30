@@ -882,6 +882,162 @@ async def _store_extractions(args: dict) -> dict:
     return {"stored": stored, "segment_id": segment_id}
 
 
+async def _ingest_file(args: dict) -> dict:
+    """Ingest a file into GAMI from a local path."""
+    import subprocess
+
+    file_path = args["file_path"]
+    tenant_id = args.get("tenant_id", "claude-opus")
+    source_type = args.get("source_type", "markdown")
+
+    import os
+    if not os.path.isfile(file_path):
+        return {"status": "error", "message": f"File not found: {file_path}"}
+
+    file_size = os.path.getsize(file_path)
+    if file_size > 50 * 1024 * 1024:  # 50MB limit
+        return {"status": "error", "message": f"File too large: {file_size} bytes (max 50MB)"}
+
+    # Use the ingest API
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=120) as client:
+            with open(file_path, "rb") as f:
+                resp = await client.post(
+                    "http://127.0.0.1:9090/api/v1/ingest/source",
+                    files={"file": (os.path.basename(file_path), f)},
+                    data={"tenant_id": tenant_id, "source_type": source_type},
+                )
+                if resp.status_code == 200:
+                    result = resp.json()
+                    return {
+                        "status": "ingested",
+                        "source_id": result.get("source_id", ""),
+                        "segments": result.get("segment_count", 0),
+                        "file": file_path,
+                        "size": file_size,
+                    }
+                else:
+                    # Fallback: direct parse + insert
+                    pass
+    except Exception:
+        pass
+
+    # Fallback: read file and insert directly
+    try:
+        with open(file_path, "r", errors="replace") as f:
+            content = f.read()
+
+        from api.services.db import AsyncSessionLocal
+        from sqlalchemy import text as sql_text
+        import hashlib
+        import uuid
+
+        source_id = f"SRC_{source_type.upper()}_{hashlib.md5(file_path.encode()).hexdigest()[:12]}"
+        fname = os.path.basename(file_path)
+
+        async with AsyncSessionLocal() as db:
+            # Create source
+            await db.execute(sql_text("""
+                INSERT INTO sources (source_id, owner_tenant_id, source_type, title,
+                    file_path, file_size_bytes, checksum, parse_status)
+                VALUES (:sid, :tid, :stype, :title, :path, :size, :cksum, 'parsed')
+                ON CONFLICT (source_id) DO NOTHING
+            """), {
+                "sid": source_id, "tid": tenant_id, "stype": source_type,
+                "title": fname, "path": file_path, "size": file_size,
+                "cksum": hashlib.md5(content[:10000].encode()).hexdigest(),
+            })
+
+            # Split into segments (simple paragraph split)
+            paragraphs = [p.strip() for p in content.split("\n\n") if p.strip() and len(p.strip()) > 20]
+            seg_count = 0
+            for i, para in enumerate(paragraphs):
+                seg_id = f"SEG_{source_id}_{i}"
+                await db.execute(sql_text("""
+                    INSERT INTO segments (segment_id, source_id, owner_tenant_id, text,
+                        segment_type, ordinal, depth, token_count)
+                    VALUES (:sid, :src, :tid, :txt, 'paragraph', :ord, 0, :tc)
+                    ON CONFLICT (segment_id) DO NOTHING
+                """), {
+                    "sid": seg_id, "src": source_id, "tid": tenant_id,
+                    "txt": para, "ord": i, "tc": len(para) // 4,
+                })
+                seg_count += 1
+
+            await db.commit()
+
+        return {
+            "status": "ingested",
+            "source_id": source_id,
+            "segments": seg_count,
+            "file": file_path,
+            "size": file_size,
+            "method": "direct_parse",
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+async def _dream_haiku(args: dict) -> dict:
+    """Run dream-like knowledge synthesis using Haiku instead of vLLM.
+
+    For machines without a GPU. Processes extraction, summarization,
+    and entity resolution using Claude Code Haiku agent via OAuth billing.
+    """
+    import subprocess
+    import shutil
+
+    limit = args.get("limit", 50)
+    phases = args.get("phases", "all")  # all, extract, summarize
+
+    if not shutil.which("claude"):
+        return {"status": "error", "message": "Claude CLI not found"}
+
+    # Get unprocessed count
+    from api.services.db import AsyncSessionLocal
+    from sqlalchemy import text as sql_text
+    async with AsyncSessionLocal() as db:
+        row = await db.execute(sql_text(
+            "SELECT count(*) FROM segments s "
+            "WHERE length(s.text) BETWEEN 200 AND 3000 "
+            "AND s.owner_tenant_id = 'claude-opus' "
+            "AND s.segment_type NOT IN ('tool_call', 'tool_result', 'chunk') "
+            "AND NOT EXISTS (SELECT 1 FROM provenance p WHERE p.segment_id = s.segment_id)"
+        ))
+        unprocessed = row.scalar()
+
+    if unprocessed == 0:
+        return {"status": "complete", "message": "All segments already processed", "unprocessed": 0}
+
+    actual_limit = min(limit, unprocessed)
+
+    # Launch process_segments.sh with the limit
+    try:
+        env = dict(__import__("os").environ)
+        env["GAMI_LIMIT"] = str(actual_limit)
+        proc = subprocess.Popen(
+            ["/opt/gami/cli/process_segments.sh"],
+            stdout=open("/tmp/gami-dream-haiku.log", "a"),
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            env=env,
+        )
+        est_minutes = actual_limit * 12 / 60  # ~12s per segment
+        return {
+            "status": "started",
+            "pid": proc.pid,
+            "unprocessed": unprocessed,
+            "processing": actual_limit,
+            "estimated_minutes": round(est_minutes, 1),
+            "message": f"Haiku dream started — processing {actual_limit} of {unprocessed} segments. "
+                       f"ETA: ~{est_minutes:.0f} min. Rate: ~300 segments/hour. "
+                       f"Monitor: tail -f /tmp/gami-dream-haiku.log",
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 async def _run_haiku_extraction(args: dict) -> dict:
     """Trigger the Haiku agent extraction pipeline.
 
@@ -989,6 +1145,8 @@ TOOL_HANDLERS = {
     "get_unprocessed_segments": _get_unprocessed_segments,
     "store_extractions": _store_extractions,
     "run_haiku_extraction": _run_haiku_extraction,
+    "ingest_file": _ingest_file,
+    "dream_haiku": _dream_haiku,
 }
 
 

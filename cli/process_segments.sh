@@ -62,7 +62,10 @@ fi
 # ---------------------------------------------------------------
 log "Spawning Haiku agent for entity extraction..."
 
-claude -p 'You are a GAMI knowledge extraction agent. Extract entities from unprocessed text segments using the GAMI HTTP API at http://localhost:9090.
+LIMIT="${GAMI_LIMIT:-10}"
+
+claude -p "You are a GAMI knowledge extraction agent. Extract entities from unprocessed text segments.
+Process up to ${LIMIT} segments.
 
 Steps:
 1. Get unprocessed segments:
@@ -101,6 +104,7 @@ Steps:
 Process up to 10 segments. Be thorough — extract ALL meaningful entities. Skip segments that are just code output or logs with no meaningful entities. Report what you processed.' \
     --model haiku \
     --allowedTools "Bash,Read" \
+    --allow-dangerously-skip-permissions \
     >> "$LOGFILE" 2>&1 || log "Agent exited with code $?"
 
 log "Segment processing complete"

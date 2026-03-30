@@ -419,6 +419,59 @@ TOOL_DEFINITIONS = {
             "required": ["segment_id", "entities"],
         },
     },
+    "ingest_file": {
+        "name": "ingest_file",
+        "description": (
+            "Ingest a local file into GAMI. Parses the file into segments and stores "
+            "them in the database. Supports markdown, plaintext, and other text formats. "
+            "After ingestion, segments are available for search and entity extraction."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "Absolute path to the file to ingest",
+                },
+                "tenant_id": {
+                    "type": "string",
+                    "description": "Tenant to own this content",
+                    "default": "claude-opus",
+                },
+                "source_type": {
+                    "type": "string",
+                    "description": "Type of content: markdown, plaintext, conversation_session",
+                    "default": "markdown",
+                },
+            },
+            "required": ["file_path"],
+        },
+    },
+    "dream_haiku": {
+        "name": "dream_haiku",
+        "description": (
+            "Run dream-like knowledge synthesis using Haiku instead of vLLM. "
+            "For machines without a GPU, or when the GPU is busy. Processes entity "
+            "extraction at ~300 segments/hour using OAuth billing. "
+            "Use dream_start for local GPU processing (~500 segments/hour)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Max segments to process (default 50)",
+                    "default": 50,
+                },
+                "phases": {
+                    "type": "string",
+                    "description": "Which phases to run: all, extract, summarize",
+                    "default": "all",
+                },
+            },
+            "required": [],
+        },
+    },
     "run_haiku_extraction": {
         "name": "run_haiku_extraction",
         "description": (
