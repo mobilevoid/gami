@@ -86,45 +86,39 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 # ---------------------------------------------------------------------------
 
 async def _memory_recall(args: dict) -> dict:
-    """Recall memories with token budget."""
-    from api.llm.embeddings import embed_text
-    from api.search.hybrid import hybrid_search
-    from api.services.db import AsyncSessionLocal
+    """Recall memories with token budget — searches memories, entities, claims, AND segments."""
+    from api.services.retrieval import recall
 
     query = args["query"]
-    tenant_ids = args.get("tenant_ids") or [args.get("tenant_id", "claude-opus")]
+    tenant_id = args.get("tenant_id", "claude-opus")
+    tenant_ids = args.get("tenant_ids")
     max_tokens = args.get("max_tokens", 2000)
 
-    query_embedding = await embed_text(query)
+    result = await recall(
+        query=query,
+        tenant_id=tenant_id,
+        tenant_ids=tenant_ids,
+        max_tokens=max_tokens,
+        mode=None,  # auto-classify
+    )
 
-    async with AsyncSessionLocal() as db:
-        results = await hybrid_search(
-            db, query, query_embedding, tenant_ids, limit=50
-        )
-
-    # Token budget management
-    context_parts = []
+    # Format for MCP response
     citations = []
-    total_tokens = 0
-
-    for r in results:
-        seg_tokens = r.get("token_count") or (len(r["text"]) // 4)
-        if total_tokens + seg_tokens + 20 > max_tokens:
-            break
-
-        context_parts.append(r["text"])
+    for ev in result.evidence:
         citations.append({
-            "segment_id": r["segment_id"],
-            "source_id": r["source_id"],
-            "score": r.get("combined_score", 0),
+            "segment_id": ev.item_id,
+            "source_id": ev.metadata.get("source_id", ev.metadata.get("source_type", "")),
+            "item_type": ev.item_type,
+            "score": ev.effective_score,
         })
-        total_tokens += seg_tokens + 20
 
     return {
-        "context": "\n\n---\n\n".join(context_parts),
+        "context": result.context_text,
         "citations": citations,
-        "total_tokens": total_tokens,
-        "results_used": len(citations),
+        "total_tokens": result.total_tokens_used,
+        "results_used": len(result.evidence),
+        "mode": result.mode,
+        "search_ms": result.search_ms,
     }
 
 

@@ -254,18 +254,144 @@ async def recall(
 
     # 3. Embed query
     query_embedding = await embed_text(query, is_query=False)
+    vec_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
 
-    # 4. Parallel anchor retrieval (vector + lexical via hybrid)
+    # 4. Multi-source retrieval: memories + entities + claims + segments
     t_search = time.monotonic()
 
-    # Adjust search limits based on mode
     search_limit = 40
     if classification.mode in (QueryMode.REPORT, QueryMode.SYNTHESIS):
         search_limit = 60
     elif classification.mode == QueryMode.FACTUAL:
         search_limit = 30
 
+    evidence_items: list[EvidenceItem] = []
+
     async with AsyncSessionLocal() as db:
+        # ---- 4a. Search assistant_memories (highest priority) ----
+        try:
+            mem_rows = await db.execute(
+                text("""
+                    SELECT memory_id, normalized_text, memory_type, subject_id,
+                           importance_score, sensitivity, stability_score,
+                           1 - (embedding <=> CAST(:vec AS vector)) as similarity
+                    FROM assistant_memories
+                    WHERE embedding IS NOT NULL
+                    AND owner_tenant_id = ANY(:tids)
+                    AND status IN ('active', 'confirmed', 'provisional')
+                    ORDER BY embedding <=> CAST(:vec AS vector)
+                    LIMIT 15
+                """),
+                {"vec": vec_str, "tids": tids},
+            )
+            for row in mem_rows:
+                sim = float(row.similarity)
+                if sim < 0.3:
+                    continue
+                # Memories get a 1.5x boost over raw segments
+                boosted_score = sim * 1.5
+                tc = count_tokens(row.normalized_text)
+                evidence_items.append(EvidenceItem(
+                    item_id=row.memory_id,
+                    item_type="memory",
+                    text=row.normalized_text,
+                    score=boosted_score,
+                    importance=float(row.importance_score) if row.importance_score else 0.8,
+                    recency_score=0.9,
+                    token_count=tc,
+                    metadata={
+                        "memory_type": row.memory_type,
+                        "subject": row.subject_id,
+                        "sensitivity": row.sensitivity,
+                        "source_type": "assistant_memory",
+                    },
+                ))
+        except Exception as exc:
+            logger.warning("Memory search failed: %s", exc)
+
+        # ---- 4b. Search entities ----
+        try:
+            ent_rows = await db.execute(
+                text("""
+                    SELECT entity_id, canonical_name, entity_type, description,
+                           aliases_json, importance_score,
+                           1 - (embedding <=> CAST(:vec AS vector)) as similarity
+                    FROM entities
+                    WHERE embedding IS NOT NULL
+                    AND owner_tenant_id = ANY(:tids)
+                    AND status IN ('active', 'provisional')
+                    ORDER BY embedding <=> CAST(:vec AS vector)
+                    LIMIT 10
+                """),
+                {"vec": vec_str, "tids": tids},
+            )
+            for row in ent_rows:
+                sim = float(row.similarity)
+                if sim < 0.35:
+                    continue
+                entity_text = f"{row.canonical_name} ({row.entity_type}): {row.description or ''}"
+                # Entities get a 1.3x boost
+                boosted_score = sim * 1.3
+                tc = count_tokens(entity_text)
+                evidence_items.append(EvidenceItem(
+                    item_id=row.entity_id,
+                    item_type="entity",
+                    text=entity_text,
+                    score=boosted_score,
+                    importance=float(row.importance_score) if row.importance_score else 0.7,
+                    recency_score=0.8,
+                    token_count=tc,
+                    metadata={
+                        "entity_type": row.entity_type,
+                        "canonical_name": row.canonical_name,
+                        "source_type": "entity",
+                    },
+                ))
+        except Exception as exc:
+            logger.warning("Entity search failed: %s", exc)
+
+        # ---- 4c. Search claims ----
+        try:
+            clm_rows = await db.execute(
+                text("""
+                    SELECT claim_id, summary_text, predicate, confidence,
+                           object_literal_json, subject_entity_id,
+                           1 - (embedding <=> CAST(:vec AS vector)) as similarity
+                    FROM claims
+                    WHERE embedding IS NOT NULL
+                    AND owner_tenant_id = ANY(:tids)
+                    AND status = 'active'
+                    ORDER BY embedding <=> CAST(:vec AS vector)
+                    LIMIT 10
+                """),
+                {"vec": vec_str, "tids": tids},
+            )
+            for row in clm_rows:
+                sim = float(row.similarity)
+                if sim < 0.35:
+                    continue
+                claim_text = row.summary_text or f"{row.predicate}: {row.object_literal_json}"
+                # Claims get a 1.4x boost
+                boosted_score = sim * 1.4
+                tc = count_tokens(claim_text)
+                evidence_items.append(EvidenceItem(
+                    item_id=row.claim_id,
+                    item_type="claim",
+                    text=claim_text,
+                    score=boosted_score,
+                    importance=float(row.confidence) if row.confidence else 0.8,
+                    recency_score=0.8,
+                    token_count=tc,
+                    metadata={
+                        "predicate": row.predicate,
+                        "confidence": float(row.confidence) if row.confidence else 0,
+                        "source_type": "claim",
+                    },
+                ))
+        except Exception as exc:
+            logger.warning("Claim search failed: %s", exc)
+
+        # ---- 4d. Search segments (standard hybrid search) ----
         results = await hybrid_search(
             db, query, query_embedding, tids,
             limit=search_limit,
@@ -274,21 +400,28 @@ async def recall(
         )
         search_ms = (time.monotonic() - t_search) * 1000
 
-        # 4. Filter out noise: skip segments with < 50 chars of text
+        # Filter noise from segments
         results = [r for r in results if len(r.get("text", "")) >= 50]
 
-        # 5. Score results (with hot score boost)
-        evidence_items: list[EvidenceItem] = []
+        # Score segment results
         for r in results:
             relevance, importance, recency = _compute_evidence_score(
                 r, classification.mode
             )
-            # Apply hot score boost from access tracking
             hot = _hot_score(
                 r.get("retrieval_count", 0),
                 r.get("last_retrieved_at"),
             )
             relevance = relevance * (1.0 + 0.15 * hot)
+
+            # Penalize tool_call/tool_result segment types (often noise)
+            seg_type = r.get("segment_type", "")
+            if seg_type in ("tool_call", "tool_result"):
+                relevance *= 0.4
+            # Boost markdown/doc segments
+            source_type = r.get("source_type", "")
+            if source_type == "markdown":
+                relevance *= 1.2
 
             token_count = r.get("token_count") or count_tokens(r.get("text", ""))
 
