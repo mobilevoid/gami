@@ -624,6 +624,83 @@ def dream_embed(max_items=200):
         return embedded
 
 # ============================================================
+# Phase 7: Auto-Approve Safe Proposals
+# ============================================================
+def dream_auto_approve():
+    """Auto-approve low-risk proposals above confidence threshold."""
+    log.info("=== Dream Phase 7: Auto-Approve Proposals ===")
+
+    AUTO_APPROVE_THRESHOLD = 0.85
+
+    with engine.connect() as conn:
+        proposals = conn.execute(text("""
+            SELECT proposal_id, change_type, target_type, target_id,
+                   proposed_state_json, confidence, reason
+            FROM proposed_changes
+            WHERE status = 'pending'
+            AND confidence >= :thresh
+            ORDER BY confidence DESC
+        """), {"thresh": AUTO_APPROVE_THRESHOLD}).fetchall()
+
+        log.info(f"  Found {len(proposals)} proposals above {AUTO_APPROVE_THRESHOLD} threshold")
+        approved = skipped = 0
+
+        for prop in proposals:
+            if should_stop():
+                break
+
+            state = json.loads(prop.proposed_state_json) if prop.proposed_state_json else {}
+
+            # Skip credential-related changes — always require human review
+            is_credential = (
+                state.get("priority") == "high"
+                or "credential" in prop.reason.lower()
+                or "password" in prop.reason.lower()
+                or "token" in prop.reason.lower()
+                or "key" in (state.get("old_text", "") + state.get("new_text", "")).lower()
+            )
+
+            if is_credential:
+                log.info(f"  SKIP (credential): {prop.reason[:80]}")
+                skipped += 1
+                continue
+
+            # Auto-approve based on change type
+            if prop.change_type == "merge_entities":
+                # Merge: set older entity as merged_into newer
+                merge_into = state.get("merge_into")
+                if merge_into:
+                    conn.execute(text("""
+                        UPDATE entities SET status = 'merged', merged_into_id = :target
+                        WHERE entity_id = :eid AND status = 'active'
+                    """), {"eid": prop.target_id, "target": merge_into})
+
+            elif prop.change_type == "supersede_claim":
+                # Supersede: mark old claim as superseded
+                new_id = state.get("superseded_by")
+                if new_id:
+                    conn.execute(text("""
+                        UPDATE claims SET status = 'superseded', superseded_by_id = :new_id
+                        WHERE claim_id = :old_id AND status = 'active'
+                    """), {"old_id": prop.target_id, "new_id": new_id})
+
+            # Mark proposal as approved
+            conn.execute(text("""
+                UPDATE proposed_changes SET status = 'approved',
+                    reviewed_by = 'dream_auto_approve', reviewed_at = NOW(),
+                    review_notes = 'Auto-approved: confidence >= threshold, non-credential'
+                WHERE proposal_id = :pid
+            """), {"pid": prop.proposal_id})
+
+            approved += 1
+            log.info(f"  APPROVED: [{prop.change_type}] {prop.reason[:60]} (conf={prop.confidence:.2f})")
+
+        conn.commit()
+        log.info(f"  Auto-approved {approved}, skipped {skipped} (credentials require human review)")
+        return {"approved": approved, "skipped": skipped}
+
+
+# ============================================================
 # Main Dream Cycle
 # ============================================================
 def dream(duration=None, phase=None, check_idle=False):
@@ -653,6 +730,7 @@ def dream(duration=None, phase=None, check_idle=False):
         ("relate", dream_relate),
         ("score", dream_score),
         ("embed", dream_embed),
+        ("auto_approve", dream_auto_approve),
     ]
 
     for phase_name, phase_fn in phases:
@@ -688,7 +766,7 @@ def dream(duration=None, phase=None, check_idle=False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GAMI Dream Cycle")
-    parser.add_argument("--phase", choices=["extract", "summarize", "resolve", "reconcile", "verify_memories", "relate", "score", "embed"])
+    parser.add_argument("--phase", choices=["extract", "summarize", "resolve", "reconcile", "verify_memories", "relate", "score", "embed", "auto_approve"])
     parser.add_argument("--duration", type=int, help="Max duration in seconds")
     parser.add_argument("--check-idle", action="store_true", help="Only run if vLLM is idle")
     args = parser.parse_args()
