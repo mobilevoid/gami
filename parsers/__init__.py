@@ -11,6 +11,7 @@ from parsers.markdown_parser import MarkdownParser
 from parsers.conversation_parser import ConversationParser
 from parsers.sqlite_memory_parser import SQLiteMemoryParser
 from parsers.plaintext_parser import PlaintextParser
+from parsers.pdf_parser import PdfParser
 
 __all__ = [
     "BaseParser",
@@ -23,4 +24,5 @@ __all__ = [
     "ConversationParser",
     "SQLiteMemoryParser",
     "PlaintextParser",
+    "PdfParser",
 ]

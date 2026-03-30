@@ -1367,3 +1367,297 @@ async def _review_proposals(args: dict) -> dict:
 
 
 TOOL_HANDLERS["review_proposals"] = _review_proposals
+
+
+# ---------------------------------------------------------------------------
+# Tenant & Ingest Pipeline Tools
+# ---------------------------------------------------------------------------
+
+async def _create_tenant(args: dict) -> dict:
+    """Create a new tenant for organizing content."""
+    from api.services.db import AsyncSessionLocal
+    from sqlalchemy import text as sql_text
+
+    tenant_id = args["tenant_id"]
+    display_name = args.get("display_name", tenant_id)
+    description = args.get("description", "")
+
+    async with AsyncSessionLocal() as db:
+        # Check if exists
+        row = await db.execute(
+            sql_text("SELECT tenant_id FROM tenants WHERE tenant_id = :tid"),
+            {"tid": tenant_id},
+        )
+        if row.fetchone():
+            return {"status": "exists", "tenant_id": tenant_id, "message": "Tenant already exists"}
+
+        await db.execute(
+            sql_text(
+                "INSERT INTO tenants (tenant_id, name, description, tenant_type, status) "
+                "VALUES (:tid, :name, :desc, 'content', 'active')"
+            ),
+            {"tid": tenant_id, "name": display_name, "desc": description},
+        )
+        await db.commit()
+
+    return {"status": "created", "tenant_id": tenant_id, "display_name": display_name}
+
+
+async def _bulk_ingest(args: dict) -> dict:
+    """Launch bulk ingest of a directory into a tenant."""
+    import subprocess
+    import glob
+
+    path = args["path"]
+    tenant_id = args["tenant_id"]
+    file_type = args.get("file_type", "pdf")
+    recursive = args.get("recursive", True)
+
+    if not os.path.exists(path):
+        return {"status": "error", "message": f"Path does not exist: {path}"}
+
+    # Count files
+    ext_map = {"pdf": "*.pdf", "markdown": "*.md", "plaintext": "*.txt"}
+    pattern = ext_map.get(file_type, f"*.{file_type}")
+    if os.path.isdir(path):
+        if recursive:
+            files = glob.glob(os.path.join(path, "**", pattern), recursive=True)
+        else:
+            files = glob.glob(os.path.join(path, pattern))
+    else:
+        files = [path]
+
+    file_count = len(files)
+    if file_count == 0:
+        return {"status": "error", "message": f"No {file_type} files found in {path}"}
+
+    # Estimate time (~30s per PDF for parse+store)
+    est_minutes = file_count * 0.5 / 60  # rough estimate
+
+    # Launch bulk_ingest.py in background
+    cmd = [
+        sys.executable, "/opt/gami/scripts/bulk_ingest.py",
+        "--path", path,
+        "--tenant", tenant_id,
+        "--type", file_type,
+        "--workers", "2",
+    ]
+    if not recursive:
+        cmd.append("--no-recursive")
+
+    log_path = f"/tmp/gami-bulk-ingest-{tenant_id}.log"
+    proc = subprocess.Popen(
+        cmd,
+        cwd="/opt/gami",
+        env={**os.environ, "PYTHONPATH": "/opt/gami"},
+        stdout=open(log_path, "w"),
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+
+    return {
+        "status": "started",
+        "pid": proc.pid,
+        "file_count": file_count,
+        "tenant_id": tenant_id,
+        "file_type": file_type,
+        "estimated_minutes": round(est_minutes, 1),
+        "log_path": log_path,
+        "message": (
+            f"Bulk ingest started (PID {proc.pid}). "
+            f"{file_count} {file_type} files into tenant '{tenant_id}'. "
+            f"Monitor: tail -f {log_path}"
+        ),
+    }
+
+
+async def _tenant_stats(args: dict) -> dict:
+    """Get stats for a specific tenant."""
+    from api.services.db import AsyncSessionLocal
+    from sqlalchemy import text as sql_text
+
+    tenant_id = args["tenant_id"]
+
+    async with AsyncSessionLocal() as db:
+        # Check tenant exists
+        row = await db.execute(
+            sql_text("SELECT tenant_id, name, status FROM tenants WHERE tenant_id = :tid"),
+            {"tid": tenant_id},
+        )
+        tenant = row.fetchone()
+        if not tenant:
+            return {"error": f"Tenant '{tenant_id}' not found"}
+
+        # Source count
+        src = await db.execute(
+            sql_text("SELECT COUNT(*) FROM sources WHERE owner_tenant_id = :tid"),
+            {"tid": tenant_id},
+        )
+        source_count = src.scalar()
+
+        # Segment counts
+        seg = await db.execute(
+            sql_text("SELECT COUNT(*) FROM segments WHERE owner_tenant_id = :tid"),
+            {"tid": tenant_id},
+        )
+        segment_count = seg.scalar()
+
+        # Embedded count
+        emb = await db.execute(
+            sql_text(
+                "SELECT COUNT(*) FROM segments "
+                "WHERE owner_tenant_id = :tid AND embedding IS NOT NULL"
+            ),
+            {"tid": tenant_id},
+        )
+        embedded_count = emb.scalar()
+
+        # Entity count
+        ent = await db.execute(
+            sql_text("SELECT COUNT(*) FROM entities WHERE owner_tenant_id = :tid"),
+            {"tid": tenant_id},
+        )
+        entity_count = ent.scalar()
+
+        # Total text size
+        txt_size = await db.execute(
+            sql_text(
+                "SELECT COALESCE(SUM(LENGTH(text)), 0) FROM segments "
+                "WHERE owner_tenant_id = :tid"
+            ),
+            {"tid": tenant_id},
+        )
+        total_text_chars = txt_size.scalar()
+
+    return {
+        "tenant_id": tenant_id,
+        "display_name": tenant[1],
+        "status": tenant[2],
+        "sources": source_count,
+        "segments": segment_count,
+        "embedded": embedded_count,
+        "unembedded": segment_count - embedded_count,
+        "entities": entity_count,
+        "total_text_chars": total_text_chars,
+        "total_text_mb": round(total_text_chars / (1024 * 1024), 2),
+    }
+
+
+async def _tenant_search(args: dict) -> dict:
+    """Search within a specific tenant using hybrid vector+keyword search."""
+    from api.llm.embeddings import embed_text
+    from api.services.db import AsyncSessionLocal
+    from sqlalchemy import text as sql_text
+
+    query = args["query"]
+    tenant_id = args["tenant_id"]
+    max_results = min(args.get("max_results", 10), 50)
+
+    # Get query embedding
+    try:
+        query_embedding = await embed_text(query, is_query=True)
+        vec_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
+    except Exception as e:
+        logger.warning("Embedding failed, falling back to lexical-only: %s", e)
+        query_embedding = None
+        vec_str = None
+
+    async with AsyncSessionLocal() as db:
+        results = []
+
+        if vec_str:
+            # Hybrid: vector + lexical
+            rows = await db.execute(
+                sql_text("""
+                    WITH vector_results AS (
+                        SELECT segment_id, text, source_id, segment_type,
+                               page_start, page_end, title_or_heading,
+                               1 - (embedding <=> CAST(:vec AS vector)) AS vscore
+                        FROM segments
+                        WHERE owner_tenant_id = :tid
+                          AND embedding IS NOT NULL
+                        ORDER BY embedding <=> CAST(:vec AS vector)
+                        LIMIT :lim
+                    ),
+                    lexical_results AS (
+                        SELECT segment_id, text, source_id, segment_type,
+                               page_start, page_end, title_or_heading,
+                               ts_rank(lexical_tsv, plainto_tsquery('english', :q)) AS lscore
+                        FROM segments
+                        WHERE owner_tenant_id = :tid
+                          AND lexical_tsv @@ plainto_tsquery('english', :q)
+                        ORDER BY lscore DESC
+                        LIMIT :lim
+                    )
+                    SELECT DISTINCT ON (segment_id)
+                        segment_id, text, source_id, segment_type,
+                        page_start, page_end, title_or_heading,
+                        COALESCE(v.vscore, 0) * 0.7 + COALESCE(l.lscore, 0) * 0.3 AS combined_score
+                    FROM (
+                        SELECT segment_id, text, source_id, segment_type,
+                               page_start, page_end, title_or_heading,
+                               vscore, NULL::float AS lscore
+                        FROM vector_results
+                        UNION ALL
+                        SELECT segment_id, text, source_id, segment_type,
+                               page_start, page_end, title_or_heading,
+                               NULL::float AS vscore, lscore
+                        FROM lexical_results
+                    ) combined
+                    LEFT JOIN vector_results v USING (segment_id)
+                    LEFT JOIN lexical_results l USING (segment_id)
+                    ORDER BY combined_score DESC
+                    LIMIT :lim
+                """),
+                {"vec": vec_str, "tid": tenant_id, "q": query, "lim": max_results},
+            )
+        else:
+            # Lexical only
+            rows = await db.execute(
+                sql_text("""
+                    SELECT segment_id, text, source_id, segment_type,
+                           page_start, page_end, title_or_heading,
+                           ts_rank(lexical_tsv, plainto_tsquery('english', :q)) AS combined_score
+                    FROM segments
+                    WHERE owner_tenant_id = :tid
+                      AND lexical_tsv @@ plainto_tsquery('english', :q)
+                    ORDER BY combined_score DESC
+                    LIMIT :lim
+                """),
+                {"tid": tenant_id, "q": query, "lim": max_results},
+            )
+
+        for r in rows.fetchall():
+            # Get source title for citation
+            src_row = await db.execute(
+                sql_text("SELECT title, author_or_origin FROM sources WHERE source_id = :sid"),
+                {"sid": r[2]},
+            )
+            src = src_row.fetchone()
+
+            results.append({
+                "segment_id": r[0],
+                "text": r[1][:800],
+                "source_id": r[2],
+                "segment_type": r[3],
+                "page_start": r[4],
+                "page_end": r[5],
+                "heading": r[6],
+                "score": round(float(r[7]), 4) if r[7] else 0,
+                "source_title": src[0] if src else None,
+                "source_author": src[1] if src else None,
+                "citation": f"{src[0] or 'Unknown'}" + (f", p.{r[4]}" if r[4] else ""),
+            })
+
+    return {
+        "query": query,
+        "tenant_id": tenant_id,
+        "results": results,
+        "total": len(results),
+    }
+
+
+TOOL_HANDLERS["create_tenant"] = _create_tenant
+TOOL_HANDLERS["bulk_ingest"] = _bulk_ingest
+TOOL_HANDLERS["tenant_stats"] = _tenant_stats
+TOOL_HANDLERS["tenant_search"] = _tenant_search

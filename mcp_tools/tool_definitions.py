@@ -539,3 +539,114 @@ REVIEW_TOOLS = [
 
 for tool in REVIEW_TOOLS:
     TOOL_DEFINITIONS[tool["name"]] = tool
+
+TENANT_TOOLS = [
+    {
+        "name": "create_tenant",
+        "description": (
+            "Create a new tenant for organizing content. Tenants isolate content "
+            "so it's only searched when explicitly requested."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tenant_id": {
+                    "type": "string",
+                    "description": "Unique tenant identifier (lowercase, no spaces)",
+                },
+                "display_name": {
+                    "type": "string",
+                    "description": "Human-readable name for the tenant",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Description of what this tenant contains",
+                    "default": "",
+                },
+            },
+            "required": ["tenant_id", "display_name"],
+        },
+    },
+    {
+        "name": "bulk_ingest",
+        "description": (
+            "Ingest a directory of files into a tenant. Launches background processing "
+            "with progress tracking. Supports PDF, markdown, and plaintext files. "
+            "Auto-creates the tenant if it doesn't exist. Deduplicates by checksum."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Directory path containing files to ingest",
+                },
+                "tenant_id": {
+                    "type": "string",
+                    "description": "Tenant ID to ingest into",
+                },
+                "file_type": {
+                    "type": "string",
+                    "description": "Type of files to process",
+                    "enum": ["pdf", "markdown", "plaintext"],
+                    "default": "pdf",
+                },
+                "recursive": {
+                    "type": "boolean",
+                    "description": "Recurse into subdirectories",
+                    "default": True,
+                },
+            },
+            "required": ["path", "tenant_id"],
+        },
+    },
+    {
+        "name": "tenant_stats",
+        "description": (
+            "Get detailed statistics for a specific tenant: source count, "
+            "segment count, embedded vs unembedded, entity count, and text size."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tenant_id": {
+                    "type": "string",
+                    "description": "Tenant ID to get stats for",
+                },
+            },
+            "required": ["tenant_id"],
+        },
+    },
+    {
+        "name": "tenant_search",
+        "description": (
+            "Search within a specific tenant using hybrid vector + keyword search. "
+            "Returns results with citations including source title, author, and page numbers. "
+            "Use this to search books, documents, or any tenant-specific content."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query",
+                },
+                "tenant_id": {
+                    "type": "string",
+                    "description": "Tenant ID to search within",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum results to return",
+                    "default": 10,
+                    "minimum": 1,
+                    "maximum": 50,
+                },
+            },
+            "required": ["query", "tenant_id"],
+        },
+    },
+]
+
+for tool in TENANT_TOOLS:
+    TOOL_DEFINITIONS[tool["name"]] = tool
