@@ -720,6 +720,474 @@ def dream_auto_approve():
 
 
 # ============================================================
+# Phase 8: Deep Dream — Second-Pass Synthesis
+# ============================================================
+def dream_deep(max_segments=100):
+    """Deep dream: re-examine processed segments for deeper meaning.
+
+    Unlike first-pass extraction (mechanical entity/claim extraction),
+    deep dream looks for:
+    - Cross-segment connections and patterns
+    - Temporal evolution (how things changed over time)
+    - Richer entity understanding from multiple contexts
+    - Implicit knowledge never explicitly stated
+    - Higher-level insights and abstractions
+
+    Uses stochastic sampling: starts recent, works backward, skips random
+    amounts so each run covers different segments. Frequently-retrieved
+    segments get priority for re-examination.
+    """
+    import random
+    log.info("=== Dream Phase 8: Deep Dream (Second-Pass Synthesis) ===")
+
+    with engine.connect() as conn:
+        # Get total eligible segments (already extracted = have provenance)
+        total = conn.execute(text("""
+            SELECT count(DISTINCT p.segment_id)
+            FROM provenance p
+            JOIN segments s ON s.segment_id = p.segment_id
+            WHERE s.owner_tenant_id = :tid
+            AND length(s.text) BETWEEN 200 AND 3000
+        """), {"tid": TENANT}).scalar()
+
+        if total == 0:
+            log.info("  No processed segments to deep-dream on")
+            return {"insights": 0, "upgrades": 0, "connections": 0}
+
+        # Build sampling pool: mix of recent, frequently-accessed, and random old
+        # 60% recent (by created_at), 20% hot (by retrieval_count), 20% random old
+        recent_limit = int(max_segments * 0.6)
+        hot_limit = int(max_segments * 0.2)
+        random_limit = max_segments - recent_limit - hot_limit
+
+        recent_rows = conn.execute(text("""
+            SELECT s.segment_id, s.text, s.source_id, s.created_at
+            FROM segments s
+            WHERE EXISTS (SELECT 1 FROM provenance p WHERE p.segment_id = s.segment_id)
+            AND s.owner_tenant_id = :tid AND length(s.text) BETWEEN 200 AND 3000
+            ORDER BY s.created_at DESC
+            LIMIT :lim
+        """), {"tid": TENANT, "lim": recent_limit * 3}).fetchall()
+
+        hot_rows = conn.execute(text("""
+            SELECT s.segment_id, s.text, s.source_id, s.created_at
+            FROM segments s
+            WHERE EXISTS (SELECT 1 FROM provenance p WHERE p.segment_id = s.segment_id)
+            AND s.owner_tenant_id = :tid AND length(s.text) BETWEEN 200 AND 3000
+            AND s.retrieval_count > 0
+            ORDER BY s.retrieval_count DESC, s.last_retrieved_at DESC
+            LIMIT :lim
+        """), {"tid": TENANT, "lim": hot_limit * 3}).fetchall()
+
+        old_rows = conn.execute(text("""
+            SELECT s.segment_id, s.text, s.source_id, s.created_at
+            FROM segments s
+            WHERE EXISTS (SELECT 1 FROM provenance p WHERE p.segment_id = s.segment_id)
+            AND s.owner_tenant_id = :tid AND length(s.text) BETWEEN 200 AND 3000
+            ORDER BY RANDOM()
+            LIMIT :lim
+        """), {"tid": TENANT, "lim": random_limit * 3}).fetchall()
+
+        # Stochastic sampling: skip random amounts
+        def stochastic_sample(rows, target, skip_range=(1, 5)):
+            sampled = []
+            i = 0
+            while i < len(rows) and len(sampled) < target:
+                sampled.append(rows[i])
+                i += random.randint(*skip_range)
+            return sampled
+
+        # Recent: smaller skips (more coverage), old: larger skips
+        pool = (
+            stochastic_sample(recent_rows, recent_limit, skip_range=(1, 3)) +
+            stochastic_sample(hot_rows, hot_limit, skip_range=(1, 2)) +
+            stochastic_sample(old_rows, random_limit, skip_range=(1, 8))
+        )
+
+        # Deduplicate by segment_id
+        seen = set()
+        unique_pool = []
+        for row in pool:
+            if row.segment_id not in seen:
+                seen.add(row.segment_id)
+                unique_pool.append(row)
+        pool = unique_pool
+
+        log.info(f"  Deep dream pool: {len(pool)} segments "
+                f"(from {total} processed, {len(recent_rows)} recent, "
+                f"{len(hot_rows)} hot, {len(old_rows)} random)")
+
+        insights_created = 0
+        entities_upgraded = 0
+        connections_found = 0
+
+        # --- Mode 1: Single segment deep analysis ---
+        # Re-examine individual segments with richer prompting
+        BATCH_SIZE = 8
+        single_pool = pool[:int(len(pool) * 0.5)]  # Half for single analysis
+
+        for batch_start in range(0, len(single_pool), BATCH_SIZE):
+            if should_stop():
+                break
+            batch = single_pool[batch_start:batch_start + BATCH_SIZE]
+
+            def _deep_single(seg_id, seg_text, source_id):
+                prompt = f"""You are a knowledge analyst performing deep analysis. This text was already processed for basic entities. Now look deeper.
+
+Analyze this text for:
+1. INSIGHTS: Non-obvious patterns, implications, or lessons learned
+2. ENTITY_UPGRADES: Richer descriptions for entities mentioned (with context from this text)
+3. CONNECTIONS: Implicit relationships between things mentioned
+
+Return JSON:
+{{"insights": ["insight text 1", ...], "entity_upgrades": [{{"name": "...", "richer_description": "..."}}], "connections": [{{"from": "...", "to": "...", "relationship": "...", "evidence": "..."}}]}}
+
+Text:
+{seg_text[:2000]}
+
+JSON:"""
+                response = call_vllm(prompt, max_tokens=2000)
+                if not response:
+                    return seg_id, source_id, None
+                # Find JSON object
+                for i in range(len(response) - 1, -1, -1):
+                    if response[i] == '}':
+                        for j in range(i, -1, -1):
+                            if response[j] == '{':
+                                try:
+                                    result = json.loads(response[j:i+1])
+                                    if isinstance(result, dict):
+                                        return seg_id, source_id, result
+                                except:
+                                    continue
+                        break
+                return seg_id, source_id, None
+
+            results = []
+            with ThreadPoolExecutor(max_workers=BATCH_SIZE) as executor:
+                futures = [executor.submit(_deep_single, r.segment_id, r.text, r.source_id) for r in batch]
+                for f in as_completed(futures):
+                    results.append(f.result())
+
+            for seg_id, source_id, analysis in results:
+                if not analysis:
+                    continue
+                try:
+                    # Store insights as high-value memories
+                    for insight_text in analysis.get("insights", []):
+                        if not insight_text or len(insight_text) < 20:
+                            continue
+                        mem_id = gen_id("MEM_insight", f"{insight_text[:40]}")
+                        conn.execute(text("""
+                            INSERT INTO assistant_memories (memory_id, owner_tenant_id, memory_type,
+                                subject_id, normalized_text, importance_score, stability_score, status)
+                            VALUES (:mid, :tid, 'insight', :subj, :txt, 0.7, 0.5, 'active')
+                            ON CONFLICT (memory_id) DO UPDATE SET
+                                stability_score = LEAST(1.0, assistant_memories.stability_score + 0.1),
+                                confirmation_count = assistant_memories.confirmation_count + 1
+                        """), {"mid": mem_id, "tid": TENANT, "subj": f"deep_dream_{seg_id[:30]}",
+                               "txt": insight_text})
+                        insights_created += 1
+
+                    # Store insights as claims too (searchable via vector)
+                    for insight_text in analysis.get("insights", []):
+                        if not insight_text or len(insight_text) < 20:
+                            continue
+                        clm_id = gen_id("CLM_insight", f"{insight_text[:40]}")
+                        conn.execute(text("""
+                            INSERT INTO claims (claim_id, owner_tenant_id, predicate,
+                                summary_text, confidence, modality, status)
+                            VALUES (:cid, :tid, 'insight', :txt, 0.7, 'inferred', 'active')
+                            ON CONFLICT (claim_id) DO NOTHING
+                        """), {"cid": clm_id, "tid": TENANT, "txt": insight_text})
+
+                    # Upgrade entity descriptions
+                    for upgrade in analysis.get("entity_upgrades", []):
+                        name = upgrade.get("name", "").strip()
+                        richer = upgrade.get("richer_description", "").strip()
+                        if not name or not richer or len(richer) < 10:
+                            continue
+                        # Only upgrade if new description is longer/richer
+                        conn.execute(text("""
+                            UPDATE entities SET description = :desc, updated_at = NOW()
+                            WHERE canonical_name ILIKE :name
+                            AND owner_tenant_id = :tid
+                            AND (description IS NULL OR length(description) < length(:desc))
+                        """), {"desc": richer, "name": f"%{name}%", "tid": TENANT})
+                        entities_upgraded += 1
+
+                    # Store connections as typed relations
+                    for conn_item in analysis.get("connections", []):
+                        from_name = conn_item.get("from", "").strip()
+                        to_name = conn_item.get("to", "").strip()
+                        rel_type = conn_item.get("relationship", "RELATED_TO").upper().replace(" ", "_")[:30]
+                        evidence = conn_item.get("evidence", "")
+                        if not from_name or not to_name:
+                            continue
+
+                        # Find entity IDs
+                        from_ent = conn.execute(text("""
+                            SELECT entity_id FROM entities
+                            WHERE canonical_name ILIKE :name AND owner_tenant_id = :tid
+                            LIMIT 1
+                        """), {"name": f"%{from_name}%", "tid": TENANT}).fetchone()
+
+                        to_ent = conn.execute(text("""
+                            SELECT entity_id FROM entities
+                            WHERE canonical_name ILIKE :name AND owner_tenant_id = :tid
+                            LIMIT 1
+                        """), {"name": f"%{to_name}%", "tid": TENANT}).fetchone()
+
+                        if from_ent and to_ent:
+                            rid = gen_id("REL_deep", f"{from_ent[0]}_{to_ent[0]}_{rel_type}")
+                            conn.execute(text("""
+                                INSERT INTO relations (relation_id, owner_tenant_id,
+                                    from_node_type, from_node_id, to_node_type, to_node_id,
+                                    relation_type, confidence, weight, support_count,
+                                    created_by, status)
+                                VALUES (:rid, :tid, 'entity', :fid, 'entity', :toid,
+                                    :rtype, 0.7, 0.6, 1, 'deep_dream', 'active')
+                                ON CONFLICT (relation_id) DO UPDATE SET
+                                    support_count = relations.support_count + 1,
+                                    confidence = LEAST(1.0, relations.confidence + 0.05)
+                            """), {"rid": rid, "tid": TENANT, "fid": from_ent[0],
+                                   "toid": to_ent[0], "rtype": rel_type})
+                            connections_found += 1
+
+                    conn.commit()
+                except Exception as e:
+                    log.warning(f"  Deep single error: {e}")
+
+            if insights_created + entities_upgraded + connections_found > 0:
+                log.info(f"  Single analysis batch: {insights_created} insights, "
+                        f"{entities_upgraded} upgrades, {connections_found} connections")
+
+        # --- Mode 2: Cross-segment comparison ---
+        # Pick random pairs/triples and look for connections between them
+        cross_pool = pool[int(len(pool) * 0.5):]
+        random.shuffle(cross_pool)
+        cross_pairs = [(cross_pool[i], cross_pool[i+1])
+                      for i in range(0, len(cross_pool) - 1, 2)][:20]
+
+        cross_connections = 0
+        for seg_a, seg_b in cross_pairs:
+            if should_stop():
+                break
+
+            prompt = f"""You are a knowledge analyst. Find connections between these two text segments from different conversations/documents.
+
+Segment A:
+{seg_a.text[:1000]}
+
+Segment B:
+{seg_b.text[:1000]}
+
+Are there any connections, shared themes, causal relationships, or contradictions?
+Return JSON:
+{{"connections": [{{"from": "concept/entity from A", "to": "concept/entity from B", "relationship": "type", "evidence": "brief explanation"}}], "shared_themes": ["theme1", ...], "contradictions": ["if any"]}}
+
+JSON:"""
+
+            response = call_vllm(prompt, max_tokens=1500)
+            if not response:
+                continue
+
+            # Parse JSON
+            result = None
+            for i in range(len(response) - 1, -1, -1):
+                if response[i] == '}':
+                    for j in range(i, -1, -1):
+                        if response[j] == '{':
+                            try:
+                                result = json.loads(response[j:i+1])
+                                if isinstance(result, dict):
+                                    break
+                            except:
+                                continue
+                    break
+
+            if not result:
+                continue
+
+            try:
+                for conn_item in result.get("connections", []):
+                    from_name = conn_item.get("from", "").strip()
+                    to_name = conn_item.get("to", "").strip()
+                    rel_type = conn_item.get("relationship", "CROSS_REFERENCE").upper().replace(" ", "_")[:30]
+                    if not from_name or not to_name:
+                        continue
+                    # Store as a cross-reference insight
+                    insight = f"{from_name} → {to_name}: {conn_item.get('evidence', rel_type)}"
+                    mem_id = gen_id("MEM_cross", f"{insight[:40]}")
+                    conn.execute(text("""
+                        INSERT INTO assistant_memories (memory_id, owner_tenant_id, memory_type,
+                            subject_id, normalized_text, importance_score, stability_score, status)
+                        VALUES (:mid, :tid, 'insight', 'cross_reference', :txt, 0.6, 0.4, 'active')
+                        ON CONFLICT (memory_id) DO UPDATE SET
+                            stability_score = LEAST(1.0, assistant_memories.stability_score + 0.1)
+                    """), {"mid": mem_id, "tid": TENANT, "txt": insight})
+                    cross_connections += 1
+
+                for theme in result.get("shared_themes", []):
+                    if theme and len(theme) > 10:
+                        mem_id = gen_id("MEM_theme", f"{theme[:40]}")
+                        conn.execute(text("""
+                            INSERT INTO assistant_memories (memory_id, owner_tenant_id, memory_type,
+                                subject_id, normalized_text, importance_score, stability_score, status)
+                            VALUES (:mid, :tid, 'insight', 'recurring_theme', :txt, 0.5, 0.3, 'active')
+                            ON CONFLICT (memory_id) DO UPDATE SET
+                                stability_score = LEAST(1.0, assistant_memories.stability_score + 0.1),
+                                confirmation_count = assistant_memories.confirmation_count + 1
+                        """), {"mid": mem_id, "tid": TENANT, "txt": theme})
+
+                conn.commit()
+            except Exception as e:
+                log.warning(f"  Cross-segment error: {e}")
+
+        if cross_connections > 0:
+            log.info(f"  Cross-segment: {cross_connections} connections from {len(cross_pairs)} pairs")
+
+        # --- Mode 3: Entity deep-dive ---
+        # Pick top entities by mention count, gather all their segments, synthesize
+        top_entities = conn.execute(text("""
+            SELECT entity_id, canonical_name, entity_type, description, mention_count
+            FROM entities
+            WHERE owner_tenant_id = :tid AND status = 'active'
+            ORDER BY mention_count DESC, retrieval_count DESC
+            LIMIT 10
+        """), {"tid": TENANT}).fetchall()
+
+        entity_insights = 0
+        for ent in top_entities:
+            if should_stop():
+                break
+
+            # Get all segments mentioning this entity
+            ent_segments = conn.execute(text("""
+                SELECT s.text FROM segments s
+                JOIN provenance p ON p.segment_id = s.segment_id
+                JOIN entities e ON p.target_id = e.entity_id
+                WHERE e.entity_id = :eid
+                ORDER BY s.created_at DESC
+                LIMIT 5
+            """), {"eid": ent.entity_id}).fetchall()
+
+            if len(ent_segments) < 2:
+                continue
+
+            combined_context = "\n---\n".join(s[0][:500] for s in ent_segments)
+
+            prompt = f"""You are building a comprehensive understanding of "{ent.canonical_name}" ({ent.entity_type}).
+
+Current description: {ent.description or 'None'}
+
+Here are {len(ent_segments)} text segments that mention it:
+{combined_context[:3000]}
+
+Synthesize a richer understanding:
+{{"upgraded_description": "comprehensive 2-3 sentence description based on all contexts", "role_in_system": "what role does this play in the overall system", "key_relationships": ["entity: relationship description", ...], "temporal_notes": "how has this changed over time, if visible"}}
+
+JSON:"""
+
+            response = call_vllm(prompt, max_tokens=1500)
+            if not response:
+                continue
+
+            result = None
+            for i in range(len(response) - 1, -1, -1):
+                if response[i] == '}':
+                    for j in range(i, -1, -1):
+                        if response[j] == '{':
+                            try:
+                                result = json.loads(response[j:i+1])
+                                if isinstance(result, dict):
+                                    break
+                            except:
+                                continue
+                    break
+
+            if not result:
+                continue
+
+            try:
+                # Upgrade entity description
+                new_desc = result.get("upgraded_description", "")
+                if new_desc and len(new_desc) > len(ent.description or ""):
+                    conn.execute(text("""
+                        UPDATE entities SET description = :desc, updated_at = NOW()
+                        WHERE entity_id = :eid
+                    """), {"desc": new_desc, "eid": ent.entity_id})
+                    entity_insights += 1
+
+                # Store role as insight
+                role = result.get("role_in_system", "")
+                if role and len(role) > 15:
+                    mem_id = gen_id("MEM_role", f"{ent.canonical_name}_{role[:30]}")
+                    conn.execute(text("""
+                        INSERT INTO assistant_memories (memory_id, owner_tenant_id, memory_type,
+                            subject_id, normalized_text, importance_score, stability_score, status)
+                        VALUES (:mid, :tid, 'insight', :subj, :txt, 0.8, 0.6, 'active')
+                        ON CONFLICT (memory_id) DO UPDATE SET
+                            normalized_text = :txt, stability_score = LEAST(1.0, assistant_memories.stability_score + 0.1)
+                    """), {"mid": mem_id, "tid": TENANT, "subj": ent.canonical_name,
+                           "txt": f"{ent.canonical_name}: {role}"})
+
+                conn.commit()
+                log.info(f"  Entity deep-dive: {ent.canonical_name} — upgraded")
+
+            except Exception as e:
+                log.warning(f"  Entity deep-dive error for {ent.canonical_name}: {e}")
+
+        # --- Embed new insights ---
+        new_mems = conn.execute(text("""
+            SELECT memory_id, normalized_text FROM assistant_memories
+            WHERE embedding IS NULL AND memory_type = 'insight' AND owner_tenant_id = :tid
+            LIMIT 100
+        """), {"tid": TENANT}).fetchall()
+
+        embedded = 0
+        for mid, mtxt in new_mems:
+            try:
+                time.sleep(0.3)
+                emb = embed_text_sync(mtxt[:2000])
+                vec = "[" + ",".join(str(v) for v in emb) + "]"
+                conn.execute(text("UPDATE assistant_memories SET embedding = CAST(:v AS vector) WHERE memory_id = :id"),
+                           {"v": vec, "id": mid})
+                embedded += 1
+            except:
+                pass
+        conn.commit()
+
+        new_claims = conn.execute(text("""
+            SELECT claim_id, summary_text FROM claims
+            WHERE embedding IS NULL AND predicate = 'insight' AND owner_tenant_id = :tid
+            LIMIT 100
+        """), {"tid": TENANT}).fetchall()
+
+        for cid, ctxt in new_claims:
+            try:
+                time.sleep(0.3)
+                emb = embed_text_sync(ctxt[:2000])
+                vec = "[" + ",".join(str(v) for v in emb) + "]"
+                conn.execute(text("UPDATE claims SET embedding = CAST(:v AS vector) WHERE claim_id = :id"),
+                           {"v": vec, "id": cid})
+                embedded += 1
+            except:
+                pass
+        conn.commit()
+
+        total_results = {
+            "insights": insights_created,
+            "entity_upgrades": entities_upgraded + entity_insights,
+            "cross_connections": cross_connections + connections_found,
+            "embedded": embedded,
+            "pool_size": len(pool),
+        }
+        log.info(f"  Deep dream complete: {json.dumps(total_results)}")
+        return total_results
+
+
+# ============================================================
 # Main Dream Cycle
 # ============================================================
 def dream(duration=None, phase=None, check_idle=False):
@@ -749,6 +1217,7 @@ def dream(duration=None, phase=None, check_idle=False):
         ("relate", dream_relate),
         ("score", dream_score),
         ("embed", dream_embed),
+        ("deep_dream", dream_deep),
         ("auto_approve", dream_auto_approve),
     ]
 
@@ -785,7 +1254,7 @@ def dream(duration=None, phase=None, check_idle=False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GAMI Dream Cycle")
-    parser.add_argument("--phase", choices=["extract", "summarize", "resolve", "reconcile", "verify_memories", "relate", "score", "embed", "auto_approve"])
+    parser.add_argument("--phase", choices=["extract", "summarize", "resolve", "reconcile", "verify_memories", "relate", "score", "embed", "deep_dream", "auto_approve"])
     parser.add_argument("--duration", type=int, help="Max duration in seconds")
     parser.add_argument("--check-idle", action="store_true", help="Only run if vLLM is idle")
     args = parser.parse_args()
