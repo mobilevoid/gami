@@ -929,3 +929,92 @@ async def _dream_status(args: dict) -> dict:
 TOOL_HANDLERS["dream_start"] = _dream_start
 TOOL_HANDLERS["dream_stop"] = _dream_stop
 TOOL_HANDLERS["dream_status"] = _dream_status
+
+
+async def _review_proposals(args: dict) -> dict:
+    """Review and approve/reject pending proposals from the dream cycle."""
+    from api.services.db import AsyncSessionLocal
+    
+    action = args.get("action", "list")  # list, approve, reject
+    proposal_id = args.get("proposal_id")
+    
+    async with AsyncSessionLocal() as db:
+        if action == "list":
+            rows = await db.execute(text("""
+                SELECT proposal_id, change_type, target_type, reason, confidence,
+                       proposed_state_json, created_at
+                FROM proposed_changes 
+                WHERE status = 'pending'
+                ORDER BY 
+                    CASE WHEN proposed_state_json::text ILIKE '%credential%' THEN 0 ELSE 1 END,
+                    confidence DESC
+                LIMIT 20
+            """))
+            proposals = []
+            for r in rows:
+                state = json.loads(r.proposed_state_json) if r.proposed_state_json else {}
+                proposals.append({
+                    "id": r.proposal_id,
+                    "type": r.change_type,
+                    "target": r.target_type,
+                    "reason": r.reason,
+                    "confidence": round(float(r.confidence), 2) if r.confidence else 0,
+                    "priority": state.get("priority", "normal"),
+                    "old": state.get("old_text", state.get("a_name", ""))[:100],
+                    "new": state.get("new_text", state.get("b_name", ""))[:100],
+                })
+            
+            count = await db.execute(text("SELECT count(*) FROM proposed_changes WHERE status = 'pending'"))
+            total = count.scalar()
+            
+            return {"pending_count": total, "proposals": proposals}
+        
+        elif action == "approve" and proposal_id:
+            # Get the proposal
+            row = await db.execute(text(
+                "SELECT change_type, target_type, target_id, proposed_state_json FROM proposed_changes WHERE proposal_id = :pid AND status = 'pending'"
+            ), {"pid": proposal_id})
+            prop = row.fetchone()
+            if not prop:
+                return {"error": "Proposal not found or already reviewed"}
+            
+            state = json.loads(prop.proposed_state_json) if prop.proposed_state_json else {}
+            
+            # Execute the change
+            if prop.change_type == "merge_entities":
+                merge_into = state.get("merge_into")
+                if merge_into:
+                    await db.execute(text("UPDATE entities SET status = 'merged', merged_into_id = :t WHERE entity_id = :e"),
+                                   {"e": prop.target_id, "t": merge_into})
+            elif prop.change_type == "supersede_claim":
+                new_id = state.get("superseded_by")
+                if new_id:
+                    await db.execute(text("UPDATE claims SET status = 'superseded', superseded_by_id = :n WHERE claim_id = :o"),
+                                   {"o": prop.target_id, "n": new_id})
+            elif prop.change_type == "update_memory":
+                # Flag memory as needing update (don't auto-change credentials)
+                await db.execute(text("UPDATE assistant_memories SET status = 'stale' WHERE memory_id = :m"),
+                               {"m": prop.target_id})
+            
+            await db.execute(text("""
+                UPDATE proposed_changes SET status = 'approved', reviewed_by = 'claude-opus', 
+                    reviewed_at = NOW(), review_notes = 'Approved by Claude'
+                WHERE proposal_id = :pid
+            """), {"pid": proposal_id})
+            await db.commit()
+            return {"status": "approved", "proposal_id": proposal_id}
+        
+        elif action == "reject" and proposal_id:
+            notes = args.get("reason", "Rejected by Claude")
+            await db.execute(text("""
+                UPDATE proposed_changes SET status = 'rejected', reviewed_by = 'claude-opus',
+                    reviewed_at = NOW(), review_notes = :notes
+                WHERE proposal_id = :pid
+            """), {"pid": proposal_id, "notes": notes})
+            await db.commit()
+            return {"status": "rejected", "proposal_id": proposal_id}
+    
+    return {"error": "Invalid action. Use: list, approve, reject"}
+
+
+TOOL_HANDLERS["review_proposals"] = _review_proposals

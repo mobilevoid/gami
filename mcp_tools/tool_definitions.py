@@ -375,3 +375,20 @@ DREAM_TOOLS = [
 ]
 
 TOOL_DEFINITIONS.extend(DREAM_TOOLS)
+
+REVIEW_TOOLS = [
+    {
+        "name": "review_proposals",
+        "description": "Review, approve, or reject pending proposals from the dream cycle. Use action='list' to see pending changes, 'approve' or 'reject' with a proposal_id to act on them. Credential changes always need explicit review.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["list", "approve", "reject"], "default": "list"},
+                "proposal_id": {"type": "string", "description": "ID of proposal to approve/reject"},
+                "reason": {"type": "string", "description": "Reason for rejection"},
+            },
+        },
+    },
+]
+
+TOOL_DEFINITIONS.extend(REVIEW_TOOLS)
