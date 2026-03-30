@@ -17,10 +17,18 @@ Features:
 import argparse
 import hashlib
 import logging
+import multiprocessing
 import os
 import sys
 import time
 import uuid
+
+# Use spawn instead of fork so CUDA works in child processes
+try:
+    multiprocessing.set_start_method("spawn", force=True)
+except RuntimeError:
+    pass
+
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Optional
@@ -360,52 +368,61 @@ def main():
 
     logger.info("Starting ingestion with %d workers...", args.workers)
 
-    with ProcessPoolExecutor(max_workers=args.workers) as executor:
-        # Submit parse jobs
+    use_executor = args.workers > 1
+
+    if use_executor:
+        executor = ProcessPoolExecutor(max_workers=args.workers)
         future_map = {}
         for fpath, checksum in files_to_ingest:
             future = executor.submit(parse_single_file, fpath, args.file_type)
             future_map[future] = (fpath, checksum)
 
-        # Collect results and store
-        for future in as_completed(future_map):
-            fpath, checksum = future_map[future]
-            completed += 1
+    # Iterate: executor mode uses as_completed, single mode processes inline
+    def iterate_results():
+        if use_executor:
+            for future in as_completed(future_map):
+                fpath, checksum = future_map[future]
+                try:
+                    yield fpath, checksum, future.result()
+                except Exception as e:
+                    yield fpath, checksum, {"error": str(e)}
+        else:
+            for fpath, checksum in files_to_ingest:
+                try:
+                    yield fpath, checksum, parse_single_file(fpath, args.file_type)
+                except Exception as e:
+                    yield fpath, checksum, {"error": str(e)}
 
-            try:
-                result = future.result()
-            except Exception as e:
-                errors += 1
-                logger.error("[%d/%d] PARSE ERROR %s: %s", completed, total, os.path.basename(fpath), e)
-                continue
+    for fpath, checksum, result in iterate_results():
+        completed += 1
 
-            if "error" in result:
-                errors += 1
-                logger.error("[%d/%d] ERROR %s: %s", completed, total, os.path.basename(fpath), result["error"])
-                continue
+        if "error" in (result or {}):
+            errors += 1
+            logger.error("[%d/%d] ERROR %s: %s", completed, total, os.path.basename(fpath), result.get("error", "unknown"))
+            continue
 
-            if result.get("skipped"):
-                skipped_empty += 1
-                logger.warning("[%d/%d] SKIP (empty) %s", completed, total, os.path.basename(fpath))
-                continue
+        if result.get("skipped"):
+            skipped_empty += 1
+            logger.warning("[%d/%d] SKIP (empty) %s", completed, total, os.path.basename(fpath))
+            continue
 
-            # Store in DB
-            try:
-                source_id, seg_count = store_parsed_result(engine, result, tenant_id, checksum, fpath)
-                total_segments += seg_count
+        # Store in DB
+        try:
+            source_id, seg_count = store_parsed_result(engine, result, tenant_id, checksum, fpath)
+            total_segments += seg_count
 
-                elapsed = time.time() - start_time
-                rate = completed / elapsed if elapsed > 0 else 0
-                remaining = (total - completed) / rate if rate > 0 else 0
+            elapsed = time.time() - start_time
+            rate = completed / elapsed if elapsed > 0 else 0
+            remaining = (total - completed) / rate if rate > 0 else 0
 
-                logger.info(
-                    "[%d/%d] OK %s — %d segments (%.1f files/min, ETA %.0fs)",
-                    completed, total, os.path.basename(fpath), seg_count,
-                    rate * 60, remaining,
-                )
-            except Exception as e:
-                errors += 1
-                logger.error("[%d/%d] DB ERROR %s: %s", completed, total, os.path.basename(fpath), e)
+            logger.info(
+                "[%d/%d] OK %s — %d segments (%.1f files/min, ETA %.0fs)",
+                completed, total, os.path.basename(fpath), seg_count,
+                rate * 60, remaining,
+            )
+        except Exception as e:
+            errors += 1
+            logger.error("[%d/%d] DB ERROR %s: %s", completed, total, os.path.basename(fpath), e)
 
     elapsed = time.time() - start_time
     engine.dispose()
