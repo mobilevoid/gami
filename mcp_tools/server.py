@@ -860,3 +860,72 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+# Dream Cycle Control
+# ---------------------------------------------------------------------------
+
+async def _dream_start(args: dict) -> dict:
+    """Start the dream cycle (background knowledge synthesis)."""
+    import subprocess
+    phase = args.get("phase")
+    duration = args.get("duration", 3600)
+    
+    cmd = ["python3", "scripts/dream_cycle.py", "--duration", str(duration), "--check-idle"]
+    if phase:
+        cmd.extend(["--phase", phase])
+    
+    proc = subprocess.Popen(
+        cmd, cwd="/opt/gami",
+        env={**os.environ, "PYTHONPATH": "/opt/gami"},
+        stdout=open("/tmp/gami-dream.log", "a"),
+        stderr=subprocess.STDOUT,
+    )
+    
+    # Save PID for pause/stop
+    with open("/tmp/gami-dream.pid", "w") as f:
+        f.write(str(proc.pid))
+    
+    return {"status": "started", "pid": proc.pid, "phase": phase or "all", "duration": duration}
+
+
+async def _dream_stop(args: dict) -> dict:
+    """Stop the running dream cycle gracefully."""
+    import signal as sig
+    try:
+        with open("/tmp/gami-dream.pid") as f:
+            pid = int(f.read().strip())
+        os.kill(pid, sig.SIGTERM)
+        return {"status": "stopping", "pid": pid, "message": "Sent SIGTERM — dream cycle will finish current task and exit"}
+    except FileNotFoundError:
+        return {"status": "not_running", "message": "No dream cycle PID file found"}
+    except ProcessLookupError:
+        return {"status": "not_running", "message": "Dream cycle process not found (already stopped)"}
+
+
+async def _dream_status(args: dict) -> dict:
+    """Check if dream cycle is running and its progress."""
+    try:
+        with open("/tmp/gami-dream.pid") as f:
+            pid = int(f.read().strip())
+        # Check if process is alive
+        os.kill(pid, 0)
+        
+        # Read last few lines of log
+        log_lines = []
+        try:
+            with open("/tmp/gami-dream.log") as f:
+                log_lines = f.readlines()[-5:]
+        except:
+            pass
+        
+        return {"status": "running", "pid": pid, "recent_log": [l.strip() for l in log_lines]}
+    except (FileNotFoundError, ProcessLookupError):
+        return {"status": "not_running"}
+
+
+# Register dream tools
+TOOL_HANDLERS["dream_start"] = _dream_start
+TOOL_HANDLERS["dream_stop"] = _dream_stop
+TOOL_HANDLERS["dream_status"] = _dream_status

@@ -349,3 +349,29 @@ TOOL_DEFINITIONS = {
         },
     },
 }
+
+DREAM_TOOLS = [
+    {
+        "name": "dream_start",
+        "description": "Start the GAMI dream cycle — background knowledge synthesis using idle GPU time. Extracts entities, generates summaries, resolves aliases, builds relations.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "phase": {"type": "string", "enum": ["extract", "summarize", "resolve", "relate", "score", "embed"], "description": "Run only a specific phase"},
+                "duration": {"type": "integer", "default": 3600, "description": "Max duration in seconds"},
+            },
+        },
+    },
+    {
+        "name": "dream_stop",
+        "description": "Stop the running dream cycle gracefully. It will finish the current task and exit.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "dream_status",
+        "description": "Check if the dream cycle is running and see recent log output.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+]
+
+TOOL_DEFINITIONS.extend(DREAM_TOOLS)
