@@ -122,15 +122,16 @@ def dream_extract(max_segments=10000):
 
         def _extract_one(seg_id, seg_text, source_id):
             """Extract entities from a single segment (runs in thread pool)."""
-            prompt = f"""Extract named entities from this text. Return ONLY a JSON array, no explanation.
-Each entity: {{"name": "...", "type": "infrastructure|service|technology|person|credential|concept", "description": "one line"}}
-Focus on: server names, IPs, CTs, services, credentials, tools.
+            prompt = f"""You are a JSON entity extractor. Output ONLY valid JSON, no thinking, no explanation.
+
+Extract named entities from this text as a JSON array:
+[{{"name":"...","type":"infrastructure|service|technology|person|credential|concept","description":"one line"}}]
 
 Text:
 {seg_text[:2000]}
 
-JSON array:"""
-            response = call_vllm(prompt, max_tokens=1000)
+Output the JSON array now:"""
+            response = call_vllm(prompt, max_tokens=2000)
             if not response:
                 return seg_id, source_id, []
             # Find JSON array — try progressively from the end since thinking text comes first
@@ -149,53 +150,55 @@ JSON array:"""
                     break  # Only try the last ']'
             return seg_id, source_id, []
 
-        # Process in parallel batches of 4
+        # Process in parallel batches — vLLM calls run in threads, DB writes are sequential
         BATCH_SIZE = 8
         for batch_start in range(0, len(rows), BATCH_SIZE):
             if should_stop():
                 break
             batch = rows[batch_start:batch_start + BATCH_SIZE]
 
+            # Parallel vLLM calls
+            results = []
             with ThreadPoolExecutor(max_workers=BATCH_SIZE) as executor:
-                futures = {
-                    executor.submit(_extract_one, sid, stxt, srcid): (sid, srcid)
-                    for sid, stxt, srcid in batch
-                }
+                futures = [executor.submit(_extract_one, sid, stxt, srcid) for sid, stxt, srcid in batch]
                 for future in as_completed(futures):
-                    seg_id, source_id, entities = future.result()
-                    if not entities:
-                        continue
-                    try:
-                        for ent in entities:
-                            name = ent.get("name", "").strip()
-                            etype = ent.get("type", "technology").lower()
-                            desc = ent.get("description", "")
-                            if not name or len(name) < 2:
-                                continue
+                    results.append(future.result())
 
-                            eid = gen_id("ENT", f"{etype}_{name}")
-                            conn.execute(text("""
-                                INSERT INTO entities (entity_id, owner_tenant_id, entity_type, canonical_name,
-                                    description, status, first_seen_at, last_seen_at, source_count, mention_count)
-                                VALUES (:eid, :tid, :etype, :name, :desc, 'active', NOW(), NOW(), 1, 1)
-                                ON CONFLICT (entity_id) DO UPDATE SET
-                                    mention_count = entities.mention_count + 1, last_seen_at = NOW()
-                            """), {"eid": eid, "tid": TENANT, "etype": etype, "name": name, "desc": desc})
+            # Sequential DB writes (connection not thread-safe)
+            for seg_id, source_id, entities in results:
+                if not entities:
+                    continue
+                try:
+                    for ent in entities:
+                        name = ent.get("name", "").strip()
+                        etype = ent.get("type", "technology").lower()
+                        desc = ent.get("description", "")
+                        if not name or len(name) < 2:
+                            continue
 
-                            prov_id = gen_id("PROV", f"{eid}_{seg_id}")
-                            conn.execute(text("""
-                                INSERT INTO provenance (provenance_id, target_type, target_id, source_id,
-                                    segment_id, extraction_method, extractor_version, confidence)
-                                VALUES (:pid, 'entity', :eid, :src, :seg, 'dream_extract', 'v1', 0.8)
-                                ON CONFLICT (provenance_id) DO NOTHING
-                            """), {"pid": prov_id, "eid": eid, "src": source_id, "seg": seg_id})
+                        eid = gen_id("ENT", f"{etype}_{name}")
+                        conn.execute(text("""
+                            INSERT INTO entities (entity_id, owner_tenant_id, entity_type, canonical_name,
+                                description, status, first_seen_at, last_seen_at, source_count, mention_count)
+                            VALUES (:eid, :tid, :etype, :name, :desc, 'active', NOW(), NOW(), 1, 1)
+                            ON CONFLICT (entity_id) DO UPDATE SET
+                                mention_count = entities.mention_count + 1, last_seen_at = NOW()
+                        """), {"eid": eid, "tid": TENANT, "etype": etype, "name": name, "desc": desc})
 
-                        conn.commit()
-                        extracted += 1
-                        log.info(f"  [{extracted}] {seg_id}: {len(entities)} entities")
-                    except Exception as e:
-                        log.warning(f"  Parse error: {e}")
-                        continue
+                        prov_id = gen_id("PROV", f"{eid}_{seg_id}")
+                        conn.execute(text("""
+                            INSERT INTO provenance (provenance_id, target_type, target_id, source_id,
+                                segment_id, extraction_method, extractor_version, confidence)
+                            VALUES (:pid, 'entity', :eid, :src, :seg, 'dream_extract', 'v1', 0.8)
+                            ON CONFLICT (provenance_id) DO NOTHING
+                        """), {"pid": prov_id, "eid": eid, "src": source_id, "seg": seg_id})
+
+                    conn.commit()
+                    extracted += 1
+                    log.info(f"  [{extracted}] {seg_id}: {len(entities)} entities")
+                except Exception as e:
+                    log.warning(f"  Parse error: {e}")
+                    continue
 
         log.info(f"  Extracted from {extracted} segments")
         return extracted
