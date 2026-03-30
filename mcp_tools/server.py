@@ -786,6 +786,102 @@ async def _admin_stats(args: dict) -> dict:
     }
 
 
+async def _get_unprocessed_segments(args: dict) -> dict:
+    """Get segments that haven't been processed for entity extraction yet."""
+    from api.services.db import AsyncSessionLocal
+    from sqlalchemy import text as sql_text
+
+    limit = args.get("limit", 20)
+    tenant_id = args.get("tenant_id", "claude-opus")
+    min_length = args.get("min_length", 200)
+    max_length = args.get("max_length", 3000)
+
+    async with AsyncSessionLocal() as db:
+        rows = await db.execute(sql_text("""
+            SELECT s.segment_id, s.text, s.source_id
+            FROM segments s
+            WHERE length(s.text) BETWEEN :minl AND :maxl
+            AND s.owner_tenant_id = :tid
+            AND s.segment_type NOT IN ('tool_call', 'tool_result', 'chunk')
+            AND NOT EXISTS (
+                SELECT 1 FROM provenance p WHERE p.segment_id = s.segment_id
+            )
+            ORDER BY s.created_at DESC
+            LIMIT :lim
+        """), {"tid": tenant_id, "minl": min_length, "maxl": max_length, "lim": limit})
+
+        segments = []
+        for row in rows:
+            segments.append({
+                "segment_id": row.segment_id,
+                "text": row.text[:2000],
+                "source_id": row.source_id,
+            })
+
+        # Also get total count
+        total = await db.execute(sql_text("""
+            SELECT count(*) FROM segments s
+            WHERE length(s.text) BETWEEN :minl AND :maxl
+            AND s.owner_tenant_id = :tid
+            AND s.segment_type NOT IN ('tool_call', 'tool_result', 'chunk')
+            AND NOT EXISTS (SELECT 1 FROM provenance p WHERE p.segment_id = s.segment_id)
+        """), {"tid": tenant_id, "minl": min_length, "maxl": max_length})
+
+    return {
+        "segments": segments,
+        "returned": len(segments),
+        "total_unprocessed": total.scalar(),
+    }
+
+
+async def _store_extractions(args: dict) -> dict:
+    """Store extracted entities and provenance from an agent's analysis."""
+    import hashlib
+    from api.services.db import AsyncSessionLocal
+    from sqlalchemy import text as sql_text
+
+    segment_id = args["segment_id"]
+    source_id = args.get("source_id", "")
+    entities = args.get("entities", [])
+    tenant_id = args.get("tenant_id", "claude-opus")
+
+    def gen_id(prefix, name):
+        h = hashlib.md5(name.encode()).hexdigest()[:8]
+        clean = "".join(c if c.isalnum() or c == '_' else '_' for c in name)[:30]
+        return f"{prefix}_{clean}_{h}"
+
+    stored = 0
+    async with AsyncSessionLocal() as db:
+        for ent in entities:
+            name = ent.get("name", "").strip()
+            etype = ent.get("type", "technology").lower()
+            desc = ent.get("description", "")
+            if not name or len(name) < 2:
+                continue
+
+            eid = gen_id("ENT", f"{etype}_{name}")
+            await db.execute(sql_text("""
+                INSERT INTO entities (entity_id, owner_tenant_id, entity_type, canonical_name,
+                    description, status, first_seen_at, last_seen_at, source_count, mention_count)
+                VALUES (:eid, :tid, :etype, :name, :desc, 'active', NOW(), NOW(), 1, 1)
+                ON CONFLICT (entity_id) DO UPDATE SET
+                    mention_count = entities.mention_count + 1, last_seen_at = NOW()
+            """), {"eid": eid, "tid": tenant_id, "etype": etype, "name": name, "desc": desc})
+
+            prov_id = gen_id("PROV", f"{eid}_{segment_id}")
+            await db.execute(sql_text("""
+                INSERT INTO provenance (provenance_id, target_type, target_id, source_id,
+                    segment_id, extraction_method, extractor_version, confidence)
+                VALUES (:pid, 'entity', :eid, :src, :seg, 'agent_extract', 'haiku_v1', 0.85)
+                ON CONFLICT (provenance_id) DO NOTHING
+            """), {"pid": prov_id, "eid": eid, "src": source_id, "seg": segment_id})
+            stored += 1
+
+        await db.commit()
+
+    return {"stored": stored, "segment_id": segment_id}
+
+
 # ---------------------------------------------------------------------------
 # Handler map
 # ---------------------------------------------------------------------------
@@ -802,6 +898,8 @@ TOOL_HANDLERS = {
     "ingest_source": _ingest_source,
     "graph_explore": _graph_explore,
     "admin_stats": _admin_stats,
+    "get_unprocessed_segments": _get_unprocessed_segments,
+    "store_extractions": _store_extractions,
 }
 
 

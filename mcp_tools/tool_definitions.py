@@ -348,6 +348,77 @@ TOOL_DEFINITIONS = {
             "required": [],
         },
     },
+    "get_unprocessed_segments": {
+        "name": "get_unprocessed_segments",
+        "description": (
+            "Get segments that haven't been processed for entity extraction yet. "
+            "Returns segment text and IDs ready for analysis."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Max segments to return",
+                    "default": 20,
+                },
+                "tenant_id": {
+                    "type": "string",
+                    "description": "Tenant to search within",
+                    "default": "claude-opus",
+                },
+                "min_length": {
+                    "type": "integer",
+                    "description": "Minimum segment text length",
+                    "default": 200,
+                },
+                "max_length": {
+                    "type": "integer",
+                    "description": "Maximum segment text length",
+                    "default": 3000,
+                },
+            },
+            "required": [],
+        },
+    },
+    "store_extractions": {
+        "name": "store_extractions",
+        "description": (
+            "Store extracted entities from a segment analysis. "
+            "Creates entity records and provenance links."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "segment_id": {
+                    "type": "string",
+                    "description": "ID of the segment that was analyzed",
+                },
+                "source_id": {
+                    "type": "string",
+                    "description": "Source ID the segment belongs to",
+                },
+                "entities": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "type": {"type": "string"},
+                            "description": {"type": "string"},
+                        },
+                    },
+                    "description": "Array of extracted entities",
+                },
+                "tenant_id": {
+                    "type": "string",
+                    "description": "Tenant ID",
+                    "default": "claude-opus",
+                },
+            },
+            "required": ["segment_id", "entities"],
+        },
+    },
 }
 
 DREAM_TOOLS = [
@@ -374,7 +445,9 @@ DREAM_TOOLS = [
     },
 ]
 
-TOOL_DEFINITIONS.extend(DREAM_TOOLS)
+# Merge list-style tool defs into the main dict
+for tool in DREAM_TOOLS:
+    TOOL_DEFINITIONS[tool["name"]] = tool
 
 REVIEW_TOOLS = [
     {
@@ -391,4 +464,5 @@ REVIEW_TOOLS = [
     },
 ]
 
-TOOL_DEFINITIONS.extend(REVIEW_TOOLS)
+for tool in REVIEW_TOOLS:
+    TOOL_DEFINITIONS[tool["name"]] = tool

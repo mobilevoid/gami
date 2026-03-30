@@ -52,4 +52,11 @@ export PYTHONPATH=/opt/gami
     --tenant claude-opus \
     >> /tmp/gami-journal-hook.log 2>&1 || true
 
+# Post-ingest: spawn Haiku agent to extract entities from new segments
+# Runs in background so it doesn't block Claude Code
+# Uses OAuth billing (subscription), ensures Ollama is running for embeddings
+if [ -x /opt/gami/cli/process_segments.sh ]; then
+    nohup /opt/gami/cli/process_segments.sh >> /tmp/gami-process-segments.log 2>&1 &
+fi
+
 exit 0
