@@ -94,12 +94,16 @@ async def _memory_recall(args: dict) -> dict:
     tenant_ids = args.get("tenant_ids")
     max_tokens = args.get("max_tokens", 2000)
 
+    # Default to 'factual' to skip slow Ollama classification (~30s).
+    # Claude already knows what it's looking for; override with mode param if needed.
+    mode = args.get("mode", "factual")
+
     result = await recall(
         query=query,
         tenant_id=tenant_id,
         tenant_ids=tenant_ids,
         max_tokens=max_tokens,
-        mode=None,  # auto-classify
+        mode=mode,
     )
 
     # Format for MCP response

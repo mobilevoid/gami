@@ -268,28 +268,57 @@ async def recall(
     evidence_items: list[EvidenceItem] = []
 
     async with AsyncSessionLocal() as db:
-        # ---- 4a. Search assistant_memories (highest priority) ----
+        # ---- 4a. Search assistant_memories (vector + keyword hybrid) ----
         try:
             mem_rows = await db.execute(
                 text("""
+                    WITH vec_match AS (
+                        SELECT memory_id, normalized_text, memory_type, subject_id,
+                               importance_score, sensitivity, stability_score,
+                               1 - (embedding <=> CAST(:vec AS vector)) as similarity,
+                               0.0 as lex_score
+                        FROM assistant_memories
+                        WHERE embedding IS NOT NULL
+                        AND owner_tenant_id = ANY(:tids)
+                        AND status IN ('active', 'confirmed', 'provisional')
+                        ORDER BY embedding <=> CAST(:vec AS vector)
+                        LIMIT 15
+                    ),
+                    lex_match AS (
+                        SELECT memory_id, normalized_text, memory_type, subject_id,
+                               importance_score, sensitivity, stability_score,
+                               0.0 as similarity,
+                               ts_rank(to_tsvector('english', normalized_text || ' ' || subject_id),
+                                       websearch_to_tsquery('english', :query)) as lex_score
+                        FROM assistant_memories
+                        WHERE owner_tenant_id = ANY(:tids)
+                        AND status IN ('active', 'confirmed', 'provisional')
+                        AND to_tsvector('english', normalized_text || ' ' || subject_id)
+                            @@ websearch_to_tsquery('english', :query)
+                        LIMIT 15
+                    )
                     SELECT memory_id, normalized_text, memory_type, subject_id,
                            importance_score, sensitivity, stability_score,
-                           1 - (embedding <=> CAST(:vec AS vector)) as similarity
-                    FROM assistant_memories
-                    WHERE embedding IS NOT NULL
-                    AND owner_tenant_id = ANY(:tids)
-                    AND status IN ('active', 'confirmed', 'provisional')
-                    ORDER BY embedding <=> CAST(:vec AS vector)
-                    LIMIT 15
+                           MAX(similarity) as similarity, MAX(lex_score) as lex_score
+                    FROM (SELECT * FROM vec_match UNION ALL SELECT * FROM lex_match) combined
+                    GROUP BY memory_id, normalized_text, memory_type, subject_id,
+                             importance_score, sensitivity, stability_score
+                    ORDER BY GREATEST(MAX(similarity), MAX(lex_score)) DESC
+                    LIMIT 20
                 """),
-                {"vec": vec_str, "tids": tids},
+                {"vec": vec_str, "tids": tids, "query": query},
             )
             for row in mem_rows:
                 sim = float(row.similarity)
-                if sim < 0.3:
+                lex = float(row.lex_score) if row.lex_score else 0.0
+                # Combine vector and lexical: use weighted max
+                # ts_rank returns small values (0.01-0.1), normalize to 0-1 range
+                lex_normalized = min(1.0, lex * 10.0) if lex > 0 else 0.0
+                combined = max(sim, lex_normalized * 0.7) if lex_normalized > 0 else sim
+                if combined < 0.2:
                     continue
                 # Memories get a 1.5x boost over raw segments
-                boosted_score = sim * 1.5
+                boosted_score = combined * 1.5
                 tc = count_tokens(row.normalized_text)
                 evidence_items.append(EvidenceItem(
                     item_id=row.memory_id,
@@ -309,29 +338,60 @@ async def recall(
         except Exception as exc:
             logger.warning("Memory search failed: %s", exc)
 
-        # ---- 4b. Search entities ----
+        # ---- 4b. Search entities (vector + keyword hybrid) ----
         try:
             ent_rows = await db.execute(
                 text("""
+                    WITH vec_match AS (
+                        SELECT entity_id, canonical_name, entity_type, description,
+                               aliases_json, importance_score,
+                               1 - (embedding <=> CAST(:vec AS vector)) as similarity,
+                               0.0 as lex_score
+                        FROM entities
+                        WHERE embedding IS NOT NULL
+                        AND owner_tenant_id = ANY(:tids)
+                        AND status IN ('active', 'provisional')
+                        ORDER BY embedding <=> CAST(:vec AS vector)
+                        LIMIT 10
+                    ),
+                    lex_match AS (
+                        SELECT entity_id, canonical_name, entity_type, description,
+                               aliases_json, importance_score,
+                               0.0 as similarity,
+                               ts_rank(to_tsvector('english',
+                                   canonical_name || ' ' || COALESCE(description, '') || ' ' ||
+                                   COALESCE(aliases_json::text, '')),
+                                   websearch_to_tsquery('english', :query)) as lex_score
+                        FROM entities
+                        WHERE owner_tenant_id = ANY(:tids)
+                        AND status IN ('active', 'provisional')
+                        AND to_tsvector('english',
+                            canonical_name || ' ' || COALESCE(description, '') || ' ' ||
+                            COALESCE(aliases_json::text, ''))
+                            @@ websearch_to_tsquery('english', :query)
+                        LIMIT 10
+                    )
                     SELECT entity_id, canonical_name, entity_type, description,
                            aliases_json, importance_score,
-                           1 - (embedding <=> CAST(:vec AS vector)) as similarity
-                    FROM entities
-                    WHERE embedding IS NOT NULL
-                    AND owner_tenant_id = ANY(:tids)
-                    AND status IN ('active', 'provisional')
-                    ORDER BY embedding <=> CAST(:vec AS vector)
-                    LIMIT 10
+                           MAX(similarity) as similarity, MAX(lex_score) as lex_score
+                    FROM (SELECT * FROM vec_match UNION ALL SELECT * FROM lex_match) combined
+                    GROUP BY entity_id, canonical_name, entity_type, description,
+                             aliases_json, importance_score
+                    ORDER BY GREATEST(MAX(similarity), MAX(lex_score)) DESC
+                    LIMIT 15
                 """),
-                {"vec": vec_str, "tids": tids},
+                {"vec": vec_str, "tids": tids, "query": query},
             )
             for row in ent_rows:
                 sim = float(row.similarity)
-                if sim < 0.35:
+                lex = float(row.lex_score) if row.lex_score else 0.0
+                lex_normalized = min(1.0, lex * 10.0) if lex > 0 else 0.0
+                combined = max(sim, lex_normalized * 0.7) if lex_normalized > 0 else sim
+                if combined < 0.2:
                     continue
                 entity_text = f"{row.canonical_name} ({row.entity_type}): {row.description or ''}"
                 # Entities get a 1.3x boost
-                boosted_score = sim * 1.3
+                boosted_score = combined * 1.3
                 tc = count_tokens(entity_text)
                 evidence_items.append(EvidenceItem(
                     item_id=row.entity_id,
@@ -350,29 +410,60 @@ async def recall(
         except Exception as exc:
             logger.warning("Entity search failed: %s", exc)
 
-        # ---- 4c. Search claims ----
+        # ---- 4c. Search claims (vector + keyword hybrid) ----
         try:
             clm_rows = await db.execute(
                 text("""
+                    WITH vec_match AS (
+                        SELECT claim_id, summary_text, predicate, confidence,
+                               object_literal_json, subject_entity_id,
+                               1 - (embedding <=> CAST(:vec AS vector)) as similarity,
+                               0.0 as lex_score
+                        FROM claims
+                        WHERE embedding IS NOT NULL
+                        AND owner_tenant_id = ANY(:tids)
+                        AND status = 'active'
+                        ORDER BY embedding <=> CAST(:vec AS vector)
+                        LIMIT 10
+                    ),
+                    lex_match AS (
+                        SELECT claim_id, summary_text, predicate, confidence,
+                               object_literal_json, subject_entity_id,
+                               0.0 as similarity,
+                               ts_rank(to_tsvector('english',
+                                   COALESCE(summary_text, '') || ' ' || predicate || ' ' ||
+                                   COALESCE(object_literal_json::text, '')),
+                                   websearch_to_tsquery('english', :query)) as lex_score
+                        FROM claims
+                        WHERE owner_tenant_id = ANY(:tids)
+                        AND status = 'active'
+                        AND to_tsvector('english',
+                            COALESCE(summary_text, '') || ' ' || predicate || ' ' ||
+                            COALESCE(object_literal_json::text, ''))
+                            @@ websearch_to_tsquery('english', :query)
+                        LIMIT 10
+                    )
                     SELECT claim_id, summary_text, predicate, confidence,
                            object_literal_json, subject_entity_id,
-                           1 - (embedding <=> CAST(:vec AS vector)) as similarity
-                    FROM claims
-                    WHERE embedding IS NOT NULL
-                    AND owner_tenant_id = ANY(:tids)
-                    AND status = 'active'
-                    ORDER BY embedding <=> CAST(:vec AS vector)
-                    LIMIT 10
+                           MAX(similarity) as similarity, MAX(lex_score) as lex_score
+                    FROM (SELECT * FROM vec_match UNION ALL SELECT * FROM lex_match) combined
+                    GROUP BY claim_id, summary_text, predicate, confidence,
+                             object_literal_json, subject_entity_id
+                    ORDER BY GREATEST(MAX(similarity), MAX(lex_score)) DESC
+                    LIMIT 15
                 """),
-                {"vec": vec_str, "tids": tids},
+                {"vec": vec_str, "tids": tids, "query": query},
             )
             for row in clm_rows:
                 sim = float(row.similarity)
-                if sim < 0.35:
+                lex = float(row.lex_score) if row.lex_score else 0.0
+                lex_normalized = min(1.0, lex * 10.0) if lex > 0 else 0.0
+                combined = max(sim, lex_normalized * 0.7) if lex_normalized > 0 else sim
+                if combined < 0.2:
                     continue
                 claim_text = row.summary_text or f"{row.predicate}: {row.object_literal_json}"
                 # Claims get a 1.4x boost
-                boosted_score = sim * 1.4
+                boosted_score = combined * 1.4
                 tc = count_tokens(claim_text)
                 evidence_items.append(EvidenceItem(
                     item_id=row.claim_id,

@@ -34,11 +34,12 @@ def count_tokens(text: str) -> int:
 
 # Priority order for evidence types (lower = higher priority)
 PRIORITY_ORDER = {
-    "claim": 0,
-    "summary": 1,
+    "memory": 0,
+    "claim": 1,
+    "entity": 1,
+    "summary": 2,
     "entity_brief": 2,
-    "memory": 3,
-    "segment": 4,
+    "segment": 3,
 }
 
 # Citation overhead per item (approximate tokens for header/metadata)
