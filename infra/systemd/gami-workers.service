@@ -10,7 +10,7 @@ Group=ai
 WorkingDirectory=/opt/gami
 Environment=PYTHONPATH=/opt/gami
 EnvironmentFile=/opt/gami/.env
-ExecStart=/usr/local/anaconda3/bin/celery -A workers.celery_app worker \
+ExecStart=/usr/local/anaconda3/bin/python -m celery -A workers.celery_app worker \
     --loglevel=info \
     --concurrency=4 \
     --queues=parse,embed,extract,background,celery \

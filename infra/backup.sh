@@ -1,133 +1,62 @@
-#!/usr/bin/env bash
-# GAMI Backup Script
-# pg_dump + Redis RDB snapshot, compressed and timestamped.
-# Retention: 7 daily, 4 weekly.
-# Intended for cron: 0 2 * * * /opt/gami/infra/backup.sh
+#!/bin/bash
+# GAMI Backup Script — backs up to local /mnt/16tb AND black-jesus NAS
 set -euo pipefail
 
-# --- Configuration ---
-BACKUP_DIR="/mnt/16tb/gami/backups"
-PG_HOST="127.0.0.1"
-PG_PORT="5433"
-PG_USER="gami"
-PG_DB="gami"
-REDIS_HOST="127.0.0.1"
-REDIS_PORT="6380"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-DAY_OF_WEEK=$(date +%u)  # 1=Monday, 7=Sunday
-LOG_FILE="/var/log/gami-backup.log"
+DAY_OF_WEEK=$(date +%u)
+LOCAL_BACKUP_DIR="/mnt/16tb/gami/backups"
+NAS_BACKUP_DIR="/mnt/nas-media-torrents/../gami-backups"  # Will fix path below
+GAMI_DB_HOST="127.0.0.1"
+GAMI_DB_PORT="5433"
+GAMI_DB_NAME="gami"
+GAMI_DB_USER="gami"
+RETENTION_DAILY=7
+RETENTION_WEEKLY=4
 
-# Retention
-DAILY_KEEP=7
-WEEKLY_KEEP=4
+mkdir -p "$LOCAL_BACKUP_DIR/daily" "$LOCAL_BACKUP_DIR/weekly"
 
-# --- Helpers ---
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
-}
+echo "[$(date)] Starting GAMI backup..."
 
-die() {
-    log "ERROR: $*"
-    exit 1
-}
+# 1. PostgreSQL dump
+echo "  Dumping PostgreSQL..."
+PGPASSWORD="GamiProd2026" pg_dump -h "$GAMI_DB_HOST" -p "$GAMI_DB_PORT" -U "$GAMI_DB_USER" "$GAMI_DB_NAME" --exclude-schema=gami_graph | gzip > "$LOCAL_BACKUP_DIR/daily/gami-pg-${TIMESTAMP}.sql.gz"
 
-# --- Setup ---
-mkdir -p "$BACKUP_DIR/daily" "$BACKUP_DIR/weekly"
-log "=== GAMI backup starting (timestamp: $TIMESTAMP) ==="
+# 2. Redis RDB snapshot
+echo "  Redis snapshot..."
+redis-cli -p 6380 BGSAVE > /dev/null 2>&1
+sleep 3
+cp /var/lib/redis-gami/dump-gami.rdb "$LOCAL_BACKUP_DIR/daily/gami-redis-${TIMESTAMP}.rdb" 2>/dev/null || true
 
-# --- PostgreSQL Dump ---
-PG_DUMP_FILE="$BACKUP_DIR/daily/gami_pg_${TIMESTAMP}.sql.gz"
-log "Dumping PostgreSQL database '$PG_DB'..."
+# 3. Cold storage SQLite index
+echo "  Cold index..."
+cp /mnt/16tb/gami/index/cold_index.sqlite "$LOCAL_BACKUP_DIR/daily/gami-cold-index-${TIMESTAMP}.sqlite" 2>/dev/null || true
 
-export PGPASSWORD='GAMI_2026_Pr0d!Secure'
-if pg_dump -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" "$PG_DB" \
-    --no-owner --no-privileges --format=plain \
-    | gzip -9 > "$PG_DUMP_FILE"; then
-    PG_SIZE=$(stat -c%s "$PG_DUMP_FILE" 2>/dev/null || echo 0)
-    log "PostgreSQL dump complete: $(basename "$PG_DUMP_FILE") ($(numfmt --to=iec "$PG_SIZE"))"
-else
-    die "PostgreSQL dump failed"
+# 4. Weekly copy on Sundays
+if [ "$DAY_OF_WEEK" -eq 7 ]; then
+    echo "  Weekly backup..."
+    cp "$LOCAL_BACKUP_DIR/daily/gami-pg-${TIMESTAMP}.sql.gz" "$LOCAL_BACKUP_DIR/weekly/"
 fi
-unset PGPASSWORD
 
-# --- Redis Snapshot ---
-REDIS_DUMP_FILE="$BACKUP_DIR/daily/gami_redis_${TIMESTAMP}.rdb.gz"
-log "Taking Redis RDB snapshot..."
-
-# Trigger BGSAVE and wait for it
-if redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" BGSAVE 2>/dev/null; then
-    # Wait for background save to complete (max 60s)
-    for i in $(seq 1 60); do
-        STATUS=$(redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" LASTSAVE 2>/dev/null)
-        sleep 1
-        NEW_STATUS=$(redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" LASTSAVE 2>/dev/null)
-        if [ "$NEW_STATUS" != "$STATUS" ] || [ "$i" -eq 1 ]; then
-            break
-        fi
-    done
-
-    # Find and copy the RDB file
-    REDIS_RDB_DIR=$(redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" CONFIG GET dir 2>/dev/null | tail -1)
-    REDIS_RDB_FILE=$(redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" CONFIG GET dbfilename 2>/dev/null | tail -1)
-
-    if [ -n "$REDIS_RDB_DIR" ] && [ -n "$REDIS_RDB_FILE" ] && [ -f "$REDIS_RDB_DIR/$REDIS_RDB_FILE" ]; then
-        gzip -c "$REDIS_RDB_DIR/$REDIS_RDB_FILE" > "$REDIS_DUMP_FILE"
-        REDIS_SIZE=$(stat -c%s "$REDIS_DUMP_FILE" 2>/dev/null || echo 0)
-        log "Redis snapshot complete: $(basename "$REDIS_DUMP_FILE") ($(numfmt --to=iec "$REDIS_SIZE"))"
-    else
-        log "WARNING: Redis RDB file not found at $REDIS_RDB_DIR/$REDIS_RDB_FILE"
+# 5. Copy to NAS (black-jesus)
+NAS_DIR="/mnt/nas-gami-backup"
+if mountpoint -q "$NAS_DIR" 2>/dev/null || mount | grep -q "nas-gami-backup"; then
+    echo "  Copying to NAS..."
+    mkdir -p "$NAS_DIR/daily" "$NAS_DIR/weekly"
+    cp "$LOCAL_BACKUP_DIR/daily/gami-pg-${TIMESTAMP}.sql.gz" "$NAS_DIR/daily/"
+    if [ "$DAY_OF_WEEK" -eq 7 ]; then
+        cp "$LOCAL_BACKUP_DIR/daily/gami-pg-${TIMESTAMP}.sql.gz" "$NAS_DIR/weekly/"
     fi
 else
-    log "WARNING: Redis BGSAVE failed (Redis may not be running)"
+    echo "  NAS not mounted — skipping NAS backup"
 fi
 
-# --- Cold Index Backup ---
-COLD_INDEX="/mnt/16tb/gami/index/cold_index.sqlite"
-if [ -f "$COLD_INDEX" ]; then
-    COLD_BACKUP="$BACKUP_DIR/daily/gami_cold_index_${TIMESTAMP}.sqlite.gz"
-    gzip -c "$COLD_INDEX" > "$COLD_BACKUP"
-    log "Cold index backup: $(basename "$COLD_BACKUP")"
+# 6. Retention cleanup
+echo "  Cleaning old backups..."
+find "$LOCAL_BACKUP_DIR/daily" -name "gami-*" -mtime +${RETENTION_DAILY} -delete 2>/dev/null || true
+find "$LOCAL_BACKUP_DIR/weekly" -name "gami-*" -mtime +$((RETENTION_WEEKLY * 7)) -delete 2>/dev/null || true
+if mountpoint -q "$NAS_DIR" 2>/dev/null; then
+    find "$NAS_DIR/daily" -name "gami-*" -mtime +${RETENTION_DAILY} -delete 2>/dev/null || true
+    find "$NAS_DIR/weekly" -name "gami-*" -mtime +$((RETENTION_WEEKLY * 7)) -delete 2>/dev/null || true
 fi
 
-# --- Weekly Copy (on Sundays) ---
-if [ "$DAY_OF_WEEK" -eq 7 ]; then
-    log "Creating weekly backup copy..."
-    for f in "$BACKUP_DIR/daily/gami_"*"_${TIMESTAMP}"*; do
-        if [ -f "$f" ]; then
-            WEEKLY_NAME=$(basename "$f" | sed "s/${TIMESTAMP}/weekly_${TIMESTAMP}/")
-            cp "$f" "$BACKUP_DIR/weekly/$WEEKLY_NAME"
-        fi
-    done
-    log "Weekly backup created."
-fi
-
-# --- Retention Cleanup ---
-log "Cleaning up old backups..."
-
-# Daily: keep last N days
-DAILY_COUNT=$(find "$BACKUP_DIR/daily" -name "gami_pg_*.sql.gz" -type f | wc -l)
-if [ "$DAILY_COUNT" -gt "$DAILY_KEEP" ]; then
-    REMOVE_COUNT=$((DAILY_COUNT - DAILY_KEEP))
-    find "$BACKUP_DIR/daily" -name "gami_*" -type f -printf '%T@ %p\n' \
-        | sort -n | head -n "$((REMOVE_COUNT * 3))" | cut -d' ' -f2- \
-        | while read -r OLD_FILE; do
-        log "  Removing old daily: $(basename "$OLD_FILE")"
-        rm -f "$OLD_FILE"
-    done
-fi
-
-# Weekly: keep last N weeks
-WEEKLY_COUNT=$(find "$BACKUP_DIR/weekly" -name "gami_pg_*" -type f | wc -l)
-if [ "$WEEKLY_COUNT" -gt "$WEEKLY_KEEP" ]; then
-    REMOVE_COUNT=$((WEEKLY_COUNT - WEEKLY_KEEP))
-    find "$BACKUP_DIR/weekly" -name "gami_*" -type f -printf '%T@ %p\n' \
-        | sort -n | head -n "$((REMOVE_COUNT * 3))" | cut -d' ' -f2- \
-        | while read -r OLD_FILE; do
-        log "  Removing old weekly: $(basename "$OLD_FILE")"
-        rm -f "$OLD_FILE"
-    done
-fi
-
-# --- Summary ---
-TOTAL_BACKUP_SIZE=$(du -sh "$BACKUP_DIR" 2>/dev/null | awk '{print $1}')
-log "=== GAMI backup complete. Total backup storage: $TOTAL_BACKUP_SIZE ==="
+echo "[$(date)] GAMI backup complete."
