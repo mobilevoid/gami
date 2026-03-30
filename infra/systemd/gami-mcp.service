@@ -1,6 +1,7 @@
 [Unit]
-Description=GAMI MCP Server
-After=gami-api.service
+Description=GAMI MCP Server (Model Context Protocol)
+After=network.target gami-api.service
+Wants=gami-api.service
 
 [Service]
 Type=simple
@@ -8,9 +9,13 @@ User=ai
 Group=ai
 WorkingDirectory=/opt/gami
 Environment=PYTHONPATH=/opt/gami
-ExecStart=/usr/local/anaconda3/bin/python -m mcp.server --port 9001
+EnvironmentFile=/opt/gami/.env
+ExecStart=/usr/local/anaconda3/bin/python -m mcp_tools.server --transport sse --port 9001
 Restart=always
 RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gami-mcp
 
 [Install]
 WantedBy=multi-user.target

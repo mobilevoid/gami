@@ -1,0 +1,19 @@
+Extract factual claims from the following text. Return a JSON array.
+Each claim must have these fields:
+- "subject": the entity or thing the claim is about
+- "predicate": the relationship or property (e.g. "has password", "runs on", "is located at", "has IP")
+- "object": the value or target of the claim
+- "confidence": float 0.0-1.0 (how certain is this claim based on the text)
+- "modality": one of "asserted" (stated as fact), "tentative" (might be true), "negated" (stated as not true)
+
+Rules:
+- Extract specific facts: IP addresses, passwords, versions, configurations, relationships
+- Include infrastructure facts: "CT231 has IP 192.168.90.231", "GitLab runs on CT252"
+- Include credentials: "GitLab root password is Xk9mP$vL2wQz8nRj"
+- Include relationships: "NPM proxies traffic to CT231"
+- Be precise — copy exact values from the text
+
+Text:
+{{ text }}
+
+Return ONLY a valid JSON array, no other text.

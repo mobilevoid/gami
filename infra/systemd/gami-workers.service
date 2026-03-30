@@ -1,6 +1,7 @@
 [Unit]
-Description=GAMI Celery Workers
-After=network.target postgresql.service redis-gami.service
+Description=GAMI Celery Workers (parse, embed, extract, background)
+After=network.target postgresql@16-main.service redis-server.service gami-api.service
+Wants=postgresql@16-main.service redis-server.service
 
 [Service]
 Type=simple
@@ -8,9 +9,18 @@ User=ai
 Group=ai
 WorkingDirectory=/opt/gami
 Environment=PYTHONPATH=/opt/gami
-ExecStart=/usr/local/anaconda3/bin/celery -A workers.celery_app worker --loglevel=info --concurrency=4
+EnvironmentFile=/opt/gami/.env
+ExecStart=/usr/local/anaconda3/bin/celery -A workers.celery_app worker \
+    --loglevel=info \
+    --concurrency=4 \
+    --queues=parse,embed,extract,background,celery \
+    --beat \
+    --schedule=/tmp/gami-celerybeat-schedule
 Restart=always
 RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gami-workers
 
 [Install]
 WantedBy=multi-user.target

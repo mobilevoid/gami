@@ -1,0 +1,19 @@
+Extract events (things that happened or were done) from the following text. Return a JSON array.
+Each event must have these fields:
+- "event_type": category like "configuration", "installation", "migration", "deployment", "debugging", "creation", "update", "deletion", "backup", "monitoring"
+- "summary": one-line description of what happened
+- "actors": array of entity names involved (who did it)
+- "objects": array of entity names affected (what was affected)
+- "location": entity name of where it happened (server, container, etc.) or null
+- "time_ref": any time reference from the text (date, "yesterday", "phase 3", etc.) or null
+- "confidence": float 0.0-1.0
+
+Rules:
+- Focus on actions and changes, not static facts
+- Include infrastructure events: deployments, configurations, migrations
+- Include troubleshooting events: debugging, fixing, investigating
+
+Text:
+{{ text }}
+
+Return ONLY a valid JSON array, no other text.
