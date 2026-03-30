@@ -1144,6 +1144,25 @@ async def _memory_correct(args: dict) -> dict:
     reason = args.get("reason", "Corrected during conversation")
     tenant_id = args.get("tenant_id", "claude-opus")
 
+    # Check knowledge tier — refuse to correct reference/historical content
+    async with AsyncSessionLocal() as db:
+        tier_row = await db.execute(sql_text(
+            "SELECT config_json->>'knowledge_tier' as tier FROM tenants WHERE tenant_id = :tid"
+        ), {"tid": tenant_id})
+        tier = (tier_row.scalar() or "operational")
+
+    if tier in ("reference", "reference-technical"):
+        return {
+            "status": "refused",
+            "message": (
+                f"Cannot correct items in '{tenant_id}' — this is a {tier} knowledge tier. "
+                f"Reference/historical content is preserved as-is to maintain source integrity. "
+                f"It represents what the source claims, not operational truth. "
+                f"To correct operational data, target the 'claude-opus' or 'shared' tenant instead."
+            ),
+            "knowledge_tier": tier,
+        }
+
     corrections = []
 
     async with AsyncSessionLocal() as db:

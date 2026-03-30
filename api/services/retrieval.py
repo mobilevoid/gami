@@ -232,6 +232,19 @@ async def recall(
     if "shared" not in tids:
         tids = list(tids) + ["shared"]
 
+    # Load knowledge tiers for all searched tenants
+    _tenant_tiers = {}
+    try:
+        async with AsyncSessionLocal() as _db:
+            _tier_rows = await _db.execute(
+                text("SELECT tenant_id, config_json->>'knowledge_tier' as tier FROM tenants WHERE tenant_id = ANY(:tids)"),
+                {"tids": tids},
+            )
+            for _r in _tier_rows:
+                _tenant_tiers[_r.tenant_id] = _r.tier or "operational"
+    except Exception:
+        pass
+
     # 1. Classify query
     t_class = time.monotonic()
     if mode:
@@ -333,6 +346,7 @@ async def recall(
                         "subject": row.subject_id,
                         "sensitivity": row.sensitivity,
                         "source_type": "assistant_memory",
+                        "knowledge_tier": _tenant_tiers.get(row.owner_tenant_id, "operational") if hasattr(row, 'owner_tenant_id') else "operational",
                     },
                 ))
         except Exception as exc:
@@ -405,6 +419,7 @@ async def recall(
                         "entity_type": row.entity_type,
                         "canonical_name": row.canonical_name,
                         "source_type": "entity",
+                        "knowledge_tier": _tenant_tiers.get(row.owner_tenant_id, "operational") if hasattr(row, 'owner_tenant_id') else "operational",
                     },
                 ))
         except Exception as exc:
@@ -477,6 +492,7 @@ async def recall(
                         "predicate": row.predicate,
                         "confidence": float(row.confidence) if row.confidence else 0,
                         "source_type": "claim",
+                        "knowledge_tier": _tenant_tiers.get(row.owner_tenant_id, "operational") if hasattr(row, 'owner_tenant_id') else "operational",
                     },
                 ))
         except Exception as exc:
@@ -516,6 +532,13 @@ async def recall(
 
             token_count = r.get("token_count") or count_tokens(r.get("text", ""))
 
+            seg_tenant = r.get("owner_tenant_id", "")
+            seg_tier = _tenant_tiers.get(seg_tenant, "operational")
+
+            # Reference tier: lower score so operational data beats book data
+            if seg_tier in ("reference", "reference-technical"):
+                relevance *= 0.7
+
             item = EvidenceItem(
                 item_id=r["segment_id"],
                 item_type="segment",
@@ -531,7 +554,8 @@ async def recall(
                     "speaker_name": r.get("speaker_name"),
                     "speaker_role": r.get("speaker_role"),
                     "message_timestamp": r.get("message_timestamp"),
-                    "owner_tenant_id": r.get("owner_tenant_id"),
+                    "owner_tenant_id": seg_tenant,
+                    "knowledge_tier": seg_tier,
                 },
             )
             evidence_items.append(item)
@@ -568,9 +592,10 @@ async def recall(
                 metadata=item.metadata,
             ))
 
-    # 7. Build context text
+    # 7. Build context text (with tier-aware attribution)
     context_parts = []
     for i, ev in enumerate(evidence_results, 1):
+        tier = ev.metadata.get("knowledge_tier", "operational")
         header_parts = []
         if ev.metadata.get("title_or_heading"):
             header_parts.append(ev.metadata["title_or_heading"])
@@ -579,7 +604,14 @@ async def recall(
         if ev.metadata.get("segment_type"):
             header_parts.append(f"({ev.metadata['segment_type']})")
         header = " ".join(header_parts) if header_parts else f"Evidence {i}"
-        context_parts.append(f"### [{i}] {header}\n{ev.text}")
+
+        # Reference tier: always attribute to source, never present as fact
+        if tier in ("reference", "reference-technical"):
+            source_name = ev.metadata.get("title_or_heading", "unknown source")
+            prefix = f"**[Reference — from \"{source_name}\"]** This is a historical/reference claim, not verified operational fact.\n"
+            context_parts.append(f"### [{i}] {header} [REFERENCE]\n{prefix}{ev.text}")
+        else:
+            context_parts.append(f"### [{i}] {header}\n{ev.text}")
 
     context_text = "\n\n---\n\n".join(context_parts)
 
