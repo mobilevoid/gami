@@ -1,0 +1,42 @@
+{
+  "total": 201,
+  "P@1": 0.701,
+  "P@5": 0.801,
+  "P@10": 0.96,
+  "P@20": 0.97,
+  "miss": 0.03,
+  "vec_wins": 56,
+  "lex_wins": 55,
+  "avg_embed_ms": 48,
+  "avg_vec_ms": 7,
+  "avg_lex_ms": 1,
+  "avg_top_sim": 0.6727,
+  "avg_exp_sim": 0.6786,
+  "recommendations": [],
+  "failed": [
+    {
+      "q": "What is the IP of GitLab?",
+      "t": "MEMORY.md"
+    },
+    {
+      "q": "- Phase 1-10: See below (original platform build phases)",
+      "t": "MEMORY.md"
+    },
+    {
+      "q": "Tell me about GitLab",
+      "t": "MEMORY.md"
+    },
+    {
+      "q": "What is at 100.95.89.107?",
+      "t": "MEMORY.md"
+    },
+    {
+      "q": "What is the IP of npm?",
+      "t": "MEMORY.md"
+    },
+    {
+      "q": "Tell me about npm",
+      "t": "MEMORY.md"
+    }
+  ]
+}

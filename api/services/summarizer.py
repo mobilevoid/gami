@@ -25,7 +25,7 @@ jinja_env = Environment(loader=FileSystemLoader(PROMPTS_DIR))
 
 SUMMARIZER_VERSION = "1.0.0"
 # Max tokens to feed the summarizer (~10k tokens ~ 40k chars)
-MAX_INPUT_CHARS = 40000
+MAX_INPUT_CHARS = 12000
 
 
 def _make_id(prefix: str) -> str:
@@ -81,7 +81,7 @@ def generate_summary(
     try:
         summary_text = call_vllm_sync(
             prompt, system_prompt=system_prompt,
-            max_tokens=2048, temperature=0.1,
+            max_tokens=1024, temperature=0.1,
         )
     except Exception as exc:
         logger.error("Summary generation LLM call failed: %s", exc)

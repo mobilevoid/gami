@@ -115,7 +115,7 @@ def parse_json_from_llm(text_str: str):
 
 _last_request_time = 0.0
 
-def call_vllm(prompt: str, system_prompt: str, max_tokens: int = 1500) -> str:
+def call_vllm(prompt: str, system_prompt: str, max_tokens: int = 1024) -> str:
     global _last_request_time
     elapsed = time.time() - _last_request_time
     if elapsed < MIN_INTERVAL:
@@ -132,7 +132,7 @@ def call_vllm(prompt: str, system_prompt: str, max_tokens: int = 1500) -> str:
         "temperature": 0.1,
         "chat_template_kwargs": {"enable_thinking": False},
     }
-    resp = requests.post(f"{VLLM_URL}/chat/completions", json=payload, timeout=120)
+    resp = requests.post(f"{VLLM_URL}/chat/completions", json=payload, timeout=300)
     _last_request_time = time.time()
     resp.raise_for_status()
     data = resp.json()
@@ -382,15 +382,15 @@ def extract_claims_from_text(db, text_content: str, source_id: str,
 # ---------------------------------------------------------------------------
 
 def select_priority_segments(db) -> list[dict]:
-    """Select top 100 segments for extraction, ordered by priority."""
+    """Select top ~30 segments for extraction, ordered by priority."""
     segments = []
 
-    # Priority 1: Memory .md files (MEMORY.md variants)
+    # Priority 1: Memory .md files (MEMORY.md variants) — richest infra data
     rows = db.execute(text(
         "SELECT s.segment_id, s.source_id, s.text, src.title "
         "FROM segments s JOIN sources src ON s.source_id = src.source_id "
-        "WHERE src.title = 'MEMORY.md' AND length(s.text) > 200 "
-        "ORDER BY length(s.text) DESC LIMIT 30"
+        "WHERE src.title = 'MEMORY.md' AND length(s.text) > 300 "
+        "ORDER BY length(s.text) DESC LIMIT 8"
     )).fetchall()
     for r in rows:
         segments.append({"segment_id": r[0], "source_id": r[1], "text": r[2], "title": r[3], "priority": 1})
@@ -399,8 +399,8 @@ def select_priority_segments(db) -> list[dict]:
     rows = db.execute(text(
         "SELECT s.segment_id, s.source_id, s.text, src.title "
         "FROM segments s JOIN sources src ON s.source_id = src.source_id "
-        "WHERE src.title = 'network-infrastructure.md' AND length(s.text) > 200 "
-        "ORDER BY length(s.text) DESC LIMIT 15"
+        "WHERE src.title = 'network-infrastructure.md' AND length(s.text) > 300 "
+        "ORDER BY length(s.text) DESC LIMIT 5"
     )).fetchall()
     for r in rows:
         segments.append({"segment_id": r[0], "source_id": r[1], "text": r[2], "title": r[3], "priority": 2})
@@ -410,8 +410,8 @@ def select_priority_segments(db) -> list[dict]:
         "SELECT s.segment_id, s.source_id, s.text, src.title "
         "FROM segments s JOIN sources src ON s.source_id = src.source_id "
         "WHERE (src.title LIKE '%CLAUDE.md%' OR src.title = 'AI-STACK.md') "
-        "AND length(s.text) > 200 "
-        "ORDER BY length(s.text) DESC LIMIT 15"
+        "AND length(s.text) > 300 "
+        "ORDER BY length(s.text) DESC LIMIT 5"
     )).fetchall()
     for r in rows:
         segments.append({"segment_id": r[0], "source_id": r[1], "text": r[2], "title": r[3], "priority": 3})
@@ -420,8 +420,8 @@ def select_priority_segments(db) -> list[dict]:
     rows = db.execute(text(
         "SELECT s.segment_id, s.source_id, s.text, src.title "
         "FROM segments s JOIN sources src ON s.source_id = src.source_id "
-        "WHERE src.title = 'wan-failover.md' AND length(s.text) > 200 "
-        "ORDER BY length(s.text) DESC LIMIT 10"
+        "WHERE src.title = 'wan-failover.md' AND length(s.text) > 300 "
+        "ORDER BY length(s.text) DESC LIMIT 3"
     )).fetchall()
     for r in rows:
         segments.append({"segment_id": r[0], "source_id": r[1], "text": r[2], "title": r[3], "priority": 4})
@@ -431,8 +431,8 @@ def select_priority_segments(db) -> list[dict]:
         "SELECT s.segment_id, s.source_id, s.text, src.title "
         "FROM segments s JOIN sources src ON s.source_id = src.source_id "
         "WHERE (src.title LIKE '%Clawdbot%' OR src.title LIKE '%OpenClaw%') "
-        "AND length(s.text) > 200 "
-        "ORDER BY length(s.text) DESC LIMIT 15"
+        "AND length(s.text) > 300 "
+        "ORDER BY length(s.text) DESC LIMIT 5"
     )).fetchall()
     for r in rows:
         segments.append({"segment_id": r[0], "source_id": r[1], "text": r[2], "title": r[3], "priority": 5})
@@ -442,17 +442,15 @@ def select_priority_segments(db) -> list[dict]:
         "SELECT s.segment_id, s.source_id, s.text, src.title "
         "FROM segments s JOIN sources src ON s.source_id = src.source_id "
         "WHERE src.title IN ("
-        "  'acme-certificates.md', 'audit-fixes.md', 'edge-failover.md', "
-        "  'headscale-vpn.md', 'stageover.md', 'dcs-platform-credentials.md', "
-        "  'servers.md', 'external-servers.md', 'system-tuning.md', "
-        "  'infrastructure-buildout-plan.md', 'HARDWARE.md', 'local-ai-models.md'"
-        ") AND length(s.text) > 200 "
-        "ORDER BY length(s.text) DESC LIMIT 20"
+        "  'acme-certificates.md', 'dcs-platform-credentials.md', "
+        "  'servers.md', 'HARDWARE.md', 'local-ai-models.md'"
+        ") AND length(s.text) > 300 "
+        "ORDER BY length(s.text) DESC LIMIT 5"
     )).fetchall()
     for r in rows:
         segments.append({"segment_id": r[0], "source_id": r[1], "text": r[2], "title": r[3], "priority": 6})
 
-    # Deduplicate by segment_id (in case of overlap)
+    # Deduplicate by segment_id
     seen = set()
     unique = []
     for s in segments:
@@ -460,8 +458,7 @@ def select_priority_segments(db) -> list[dict]:
             seen.add(s["segment_id"])
             unique.append(s)
 
-    # Cap at 100
-    return unique[:100]
+    return unique[:35]
 
 
 # ---------------------------------------------------------------------------
@@ -524,7 +521,7 @@ def main():
                 continue
 
         # Phase 2: Claim extraction on top 50 segments
-        claim_segments = segments[:50]
+        claim_segments = segments[:15]
         log.info("=" * 60)
         log.info("PHASE 2: Claim extraction on %d segments", len(claim_segments))
         log.info("=" * 60)
