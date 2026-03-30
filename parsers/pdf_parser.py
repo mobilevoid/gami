@@ -215,6 +215,62 @@ def _extract_with_pdfplumber(file_path: str, page_num: int) -> str:
     return ""
 
 
+def _clean_text(text: str) -> str:
+    """Clean extracted PDF text — fix spacing artifacts, OCR issues, hyphenation."""
+    lines = text.split('\n')
+    cleaned_lines = []
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            cleaned_lines.append('')
+            continue
+
+        # 1. Fix "R E L A T I O N S H I P" — pure single-char-spaced lines
+        tokens = stripped.split()
+        single_caps = sum(1 for t in tokens if len(t) == 1 and t.isupper())
+        if len(tokens) > 3 and single_caps > len(tokens) * 0.5:
+            fixed = re.sub(r'(?<=[A-Z]) (?=[A-Z](?:\s|$))', '', stripped)
+            fixed = re.sub(r'  +', ' ', fixed)
+            cleaned_lines.append(fixed)
+            continue
+
+        # 2. Fix "C ARLO  M ATTOGNO" — first letter split from uppercase word
+        fixed = stripped
+        for _ in range(3):
+            new_fixed = re.sub(r'\b([A-Z]) ([A-Z]{2,})\b', r'\1\2', fixed)
+            if new_fixed == fixed:
+                break
+            fixed = new_fixed
+        fixed = re.sub(r'  +', ' ', fixed)
+        cleaned_lines.append(fixed)
+
+    text = '\n'.join(cleaned_lines)
+
+    # 3. Fix hyphenated line breaks: "impor-\ntant" → "important"
+    text = re.sub(r'(\w)-\s*\n\s*(\w)', r'\1\2', text)
+
+    # 4. Remove standalone page numbers
+    text = re.sub(r'^\s*\d{1,4}\s*$', '', text, flags=re.MULTILINE)
+
+    # 5. Remove single/double char garbage lines (OCR artifacts)
+    text = re.sub(r'^.{1,2}$', '', text, flags=re.MULTILINE)
+
+    # 6. Fix Unicode/OCR ligatures and smart quotes
+    for old, new in [('ﬁ', 'fi'), ('ﬂ', 'fl'), ('ﬀ', 'ff'), ('ﬃ', 'ffi'), ('ﬄ', 'ffl'),
+                     ('\xad', '-'), ('\u2019', "'"), ('\u2018', "'"),
+                     ('\u201c', '"'), ('\u201d', '"')]:
+        text = text.replace(old, new)
+
+    # 7. Remove decorative lines (=====, -----, .....)
+    text = re.sub(r'^\s*[.\-_=*]{5,}\s*$', '', text, flags=re.MULTILINE)
+
+    # 8. Collapse excessive blank lines
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    return text.strip()
+
+
 def _clean_header_footer(pages_text: list[str]) -> list[str]:
     """Detect and remove repeated headers/footers across pages."""
     if len(pages_text) < 5:
@@ -320,7 +376,10 @@ class PdfParser(BaseParser):
         # Step 4: Clean headers/footers
         pages_text = _clean_header_footer(pages_text)
 
-        # Step 5: Build segments — one per page initially, then chunk
+        # Step 5: Clean text quality — fix spacing, OCR artifacts, hyphenation
+        pages_text = [_clean_text(page) for page in pages_text]
+
+        # Step 6: Build segments — one per page initially, then chunk
         segments = []
         for page_num, page_text in enumerate(pages_text):
             if not page_text or len(page_text.strip()) < 20:
