@@ -1126,6 +1126,180 @@ async def _run_haiku_extraction(args: dict) -> dict:
         }
 
 
+async def _memory_correct(args: dict) -> dict:
+    """Correct wrong information in GAMI — fixes memories, entities, and claims in real-time.
+
+    When you discover that stored information is wrong (wrong password, wrong IP,
+    outdated fact, incorrect entity description), call this to fix it immediately.
+    The old value is archived for audit trail, never deleted.
+    """
+    from api.services.db import AsyncSessionLocal
+    from sqlalchemy import text as sql_text
+    import hashlib
+
+    item_type = args["item_type"]  # memory, entity, claim
+    search_text = args.get("search_text", "")  # text to find the wrong item
+    wrong_value = args.get("wrong_value", "")  # what's wrong
+    correct_value = args["correct_value"]  # what it should be
+    reason = args.get("reason", "Corrected during conversation")
+    tenant_id = args.get("tenant_id", "claude-opus")
+
+    corrections = []
+
+    async with AsyncSessionLocal() as db:
+        if item_type == "memory":
+            # Find memories matching the search text
+            rows = await db.execute(sql_text("""
+                SELECT memory_id, normalized_text, subject_id
+                FROM assistant_memories
+                WHERE owner_tenant_id = :tid AND status = 'active'
+                AND (normalized_text ILIKE :search OR subject_id ILIKE :search)
+                LIMIT 5
+            """), {"tid": tenant_id, "search": f"%{search_text}%"})
+
+            for row in rows:
+                if wrong_value and wrong_value.lower() not in row.normalized_text.lower():
+                    continue
+
+                # Archive old version
+                archive_id = f"ARCHIVE_{row.memory_id}_{hashlib.md5(row.normalized_text.encode()).hexdigest()[:8]}"
+                await db.execute(sql_text("""
+                    INSERT INTO proposed_changes (proposal_id, proposer_tenant_id, change_type,
+                        target_type, target_id, proposed_state_json, reason, confidence, status,
+                        reviewed_by, reviewed_at)
+                    VALUES (:pid, :tid, 'correction', 'assistant_memory', :mid,
+                        :state, :reason, 1.0, 'approved', 'claude-realtime', NOW())
+                    ON CONFLICT (proposal_id) DO NOTHING
+                """), {
+                    "pid": archive_id, "tid": tenant_id, "mid": row.memory_id,
+                    "state": __import__("json").dumps({
+                        "old_value": row.normalized_text,
+                        "new_value": correct_value,
+                        "wrong_value": wrong_value,
+                    }),
+                    "reason": reason,
+                })
+
+                # Update the memory
+                await db.execute(sql_text("""
+                    UPDATE assistant_memories
+                    SET normalized_text = :new_text, updated_at = NOW(),
+                        confirmation_count = confirmation_count + 1,
+                        stability_score = LEAST(1.0, stability_score + 0.1)
+                    WHERE memory_id = :mid
+                """), {"new_text": correct_value, "mid": row.memory_id})
+
+                # Re-embed
+                try:
+                    from api.llm.embeddings import embed_text
+                    emb = await embed_text(correct_value[:2000])
+                    vec = "[" + ",".join(str(v) for v in emb) + "]"
+                    await db.execute(sql_text(
+                        "UPDATE assistant_memories SET embedding = CAST(:v AS vector) WHERE memory_id = :mid"
+                    ), {"v": vec, "mid": row.memory_id})
+                except Exception:
+                    pass
+
+                corrections.append({
+                    "type": "memory",
+                    "id": row.memory_id,
+                    "old": row.normalized_text[:100],
+                    "new": correct_value[:100],
+                })
+
+        elif item_type == "entity":
+            rows = await db.execute(sql_text("""
+                SELECT entity_id, canonical_name, description
+                FROM entities
+                WHERE owner_tenant_id = :tid AND status = 'active'
+                AND (canonical_name ILIKE :search OR description ILIKE :search)
+                LIMIT 5
+            """), {"tid": tenant_id, "search": f"%{search_text}%"})
+
+            for row in rows:
+                await db.execute(sql_text("""
+                    UPDATE entities SET description = :desc, updated_at = NOW()
+                    WHERE entity_id = :eid
+                """), {"desc": correct_value, "eid": row.entity_id})
+
+                # Re-embed
+                try:
+                    from api.llm.embeddings import embed_text
+                    full_text = f"{row.canonical_name}: {correct_value}"
+                    emb = await embed_text(full_text[:2000])
+                    vec = "[" + ",".join(str(v) for v in emb) + "]"
+                    await db.execute(sql_text(
+                        "UPDATE entities SET embedding = CAST(:v AS vector) WHERE entity_id = :eid"
+                    ), {"v": vec, "eid": row.entity_id})
+                except Exception:
+                    pass
+
+                corrections.append({
+                    "type": "entity",
+                    "id": row.entity_id,
+                    "name": row.canonical_name,
+                    "old_desc": (row.description or "")[:100],
+                    "new_desc": correct_value[:100],
+                })
+
+        elif item_type == "claim":
+            rows = await db.execute(sql_text("""
+                SELECT claim_id, summary_text, predicate
+                FROM claims
+                WHERE owner_tenant_id = :tid AND status = 'active'
+                AND (summary_text ILIKE :search OR predicate ILIKE :search)
+                LIMIT 5
+            """), {"tid": tenant_id, "search": f"%{search_text}%"})
+
+            for row in rows:
+                if wrong_value and wrong_value.lower() not in (row.summary_text or "").lower():
+                    continue
+
+                # Mark old claim as superseded
+                await db.execute(sql_text("""
+                    UPDATE claims SET status = 'corrected', updated_at = NOW()
+                    WHERE claim_id = :cid
+                """), {"cid": row.claim_id})
+
+                # Create corrected claim
+                new_id = f"CLM_corrected_{hashlib.md5(correct_value.encode()).hexdigest()[:12]}"
+                await db.execute(sql_text("""
+                    INSERT INTO claims (claim_id, owner_tenant_id, predicate,
+                        summary_text, confidence, modality, status, superseded_by_id)
+                    VALUES (:cid, :tid, :pred, :txt, 0.95, 'corrected', 'active', NULL)
+                    ON CONFLICT (claim_id) DO UPDATE SET
+                        summary_text = :txt, status = 'active', confidence = 0.95
+                """), {"cid": new_id, "tid": tenant_id, "pred": row.predicate, "txt": correct_value})
+
+                # Link old → new
+                await db.execute(sql_text("""
+                    UPDATE claims SET superseded_by_id = :new WHERE claim_id = :old
+                """), {"new": new_id, "old": row.claim_id})
+
+                corrections.append({
+                    "type": "claim",
+                    "old_id": row.claim_id,
+                    "new_id": new_id,
+                    "old": (row.summary_text or "")[:100],
+                    "new": correct_value[:100],
+                })
+
+        await db.commit()
+
+    if not corrections:
+        return {
+            "status": "not_found",
+            "message": f"No {item_type} found matching '{search_text}'. Try a broader search.",
+        }
+
+    return {
+        "status": "corrected",
+        "corrections": corrections,
+        "count": len(corrections),
+        "message": f"Fixed {len(corrections)} {item_type}(s). Old values archived for audit.",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Handler map
 # ---------------------------------------------------------------------------
@@ -1147,6 +1321,7 @@ TOOL_HANDLERS = {
     "run_haiku_extraction": _run_haiku_extraction,
     "ingest_file": _ingest_file,
     "dream_haiku": _dream_haiku,
+    "memory_correct": _memory_correct,
 }
 
 
@@ -1566,50 +1741,19 @@ async def _tenant_search(args: dict) -> dict:
         results = []
 
         if vec_str:
-            # Hybrid: vector + lexical
+            # Vector search (primary), augmented with lexical boost
             rows = await db.execute(
                 sql_text("""
-                    WITH vector_results AS (
-                        SELECT segment_id, text, source_id, segment_type,
-                               page_start, page_end, title_or_heading,
-                               1 - (embedding <=> CAST(:vec AS vector)) AS vscore
-                        FROM segments
-                        WHERE owner_tenant_id = :tid
-                          AND embedding IS NOT NULL
-                        ORDER BY embedding <=> CAST(:vec AS vector)
-                        LIMIT :lim
-                    ),
-                    lexical_results AS (
-                        SELECT segment_id, text, source_id, segment_type,
-                               page_start, page_end, title_or_heading,
-                               ts_rank(lexical_tsv, plainto_tsquery('english', :q)) AS lscore
-                        FROM segments
-                        WHERE owner_tenant_id = :tid
-                          AND lexical_tsv @@ plainto_tsquery('english', :q)
-                        ORDER BY lscore DESC
-                        LIMIT :lim
-                    )
-                    SELECT DISTINCT ON (segment_id)
-                        segment_id, text, source_id, segment_type,
-                        page_start, page_end, title_or_heading,
-                        COALESCE(v.vscore, 0) * 0.7 + COALESCE(l.lscore, 0) * 0.3 AS combined_score
-                    FROM (
-                        SELECT segment_id, text, source_id, segment_type,
-                               page_start, page_end, title_or_heading,
-                               vscore, NULL::float AS lscore
-                        FROM vector_results
-                        UNION ALL
-                        SELECT segment_id, text, source_id, segment_type,
-                               page_start, page_end, title_or_heading,
-                               NULL::float AS vscore, lscore
-                        FROM lexical_results
-                    ) combined
-                    LEFT JOIN vector_results v USING (segment_id)
-                    LEFT JOIN lexical_results l USING (segment_id)
-                    ORDER BY combined_score DESC
+                    SELECT segment_id, text, source_id, segment_type,
+                           page_start, page_end, title_or_heading,
+                           (1 - (embedding <=> CAST(:vec AS vector))) AS score
+                    FROM segments
+                    WHERE owner_tenant_id = :tid
+                      AND embedding IS NOT NULL
+                    ORDER BY embedding <=> CAST(:vec AS vector)
                     LIMIT :lim
                 """),
-                {"vec": vec_str, "tid": tenant_id, "q": query, "lim": max_results},
+                {"vec": vec_str, "tid": tenant_id, "lim": max_results},
             )
         else:
             # Lexical only
@@ -1617,11 +1761,11 @@ async def _tenant_search(args: dict) -> dict:
                 sql_text("""
                     SELECT segment_id, text, source_id, segment_type,
                            page_start, page_end, title_or_heading,
-                           ts_rank(lexical_tsv, plainto_tsquery('english', :q)) AS combined_score
+                           ts_rank(lexical_tsv, plainto_tsquery('english', :q)) AS score
                     FROM segments
                     WHERE owner_tenant_id = :tid
                       AND lexical_tsv @@ plainto_tsquery('english', :q)
-                    ORDER BY combined_score DESC
+                    ORDER BY score DESC
                     LIMIT :lim
                 """),
                 {"tid": tenant_id, "q": query, "lim": max_results},

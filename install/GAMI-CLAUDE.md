@@ -29,6 +29,17 @@ Then restart Claude Code to load the MCP tools.
 - Then call `dream_haiku` to extract entities (no GPU needed)
 - Or call `dream_start` if a local GPU with vLLM is available (faster)
 
+### Correcting Wrong Information (IMPORTANT)
+When `memory_recall` returns information you KNOW is wrong — wrong password, wrong IP, outdated fact, or the user tells you something has changed — call `memory_correct` IMMEDIATELY. Do not wait for the user to ask.
+
+```
+memory_correct(item_type="memory", search_text="CT231 password",
+               wrong_value="old_pass", correct_value="new_pass",
+               reason="User confirmed new password")
+```
+
+This is critical for data quality. Bad data that persists across sessions compounds errors.
+
 ### Reviewing Knowledge Changes
 - Call `review_proposals` with action="list" to see pending changes
 - Approve or reject with action="approve"/"reject" and the proposal_id
@@ -39,6 +50,7 @@ Then restart Claude Code to load the MCP tools.
 |-----------|------|---------|
 | Search memory | `memory_recall` | query: "PostgreSQL credentials" |
 | Store a fact | `memory_remember` | text: "Server IP is 10.0.0.1", memory_type: "fact" |
+| Fix wrong data | `memory_correct` | item_type: "memory", search_text: "old IP", correct_value: "10.0.0.2" |
 | Add a file | `ingest_file` | file_path: "/path/to/doc.md" |
 | Process new content | `dream_haiku` | limit: 50 |
 | Check system | `admin_stats` | (no args) |
@@ -50,3 +62,4 @@ Then restart Claude Code to load the MCP tools.
 - Sessions auto-save on compact/clear/exit via hooks
 - Haiku extraction runs automatically after session save
 - All memories are searchable by hybrid vector + keyword search
+- **When you see wrong data, fix it immediately with `memory_correct`** — proactive correction keeps the knowledge base healthy

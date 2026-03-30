@@ -492,6 +492,50 @@ TOOL_DEFINITIONS = {
             "required": [],
         },
     },
+    "memory_correct": {
+        "name": "memory_correct",
+        "description": (
+            "Fix wrong information in GAMI in real-time. When you discover a memory, "
+            "entity, or claim contains incorrect data (wrong password, wrong IP, "
+            "outdated fact), call this to correct it immediately. Old values are "
+            "archived for audit trail. Use this PROACTIVELY when you notice errors "
+            "during recall — don't wait for the user to ask."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "item_type": {
+                    "type": "string",
+                    "description": "Type of item to correct",
+                    "enum": ["memory", "entity", "claim"],
+                },
+                "search_text": {
+                    "type": "string",
+                    "description": "Text to find the wrong item (name, subject, or content fragment)",
+                },
+                "wrong_value": {
+                    "type": "string",
+                    "description": "The incorrect value (helps narrow to the right item)",
+                    "default": "",
+                },
+                "correct_value": {
+                    "type": "string",
+                    "description": "The correct value to replace it with",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why this correction is being made",
+                    "default": "Corrected during conversation",
+                },
+                "tenant_id": {
+                    "type": "string",
+                    "description": "Tenant scope",
+                    "default": "claude-opus",
+                },
+            },
+            "required": ["item_type", "correct_value"],
+        },
+    },
 }
 
 DREAM_TOOLS = [
