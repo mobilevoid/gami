@@ -22,6 +22,7 @@ Usage:
     python scripts/dream_cycle.py --check-idle       # Only run if vLLM is idle
 """
 import os, sys, time, json, logging, signal, argparse, requests, hashlib, re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -122,10 +123,8 @@ def dream_extract(max_segments=50):
         log.info(f"  Found {len(rows)} segments to extract from")
         extracted = 0
 
-        for seg_id, seg_text, source_id in rows:
-            if should_stop():
-                break
-
+        def _extract_one(seg_id, seg_text, source_id):
+            """Extract entities from a single segment (runs in thread pool)."""
             prompt = f"""Extract named entities from this text. Return a JSON array.
 Each entity: {{"name": "...", "type": "infrastructure|service|technology|person|credential|concept", "description": "one line"}}
 Focus on: server names, IPs, CTs, services, credentials, tools.
@@ -134,50 +133,64 @@ Text:
 {seg_text[:2000]}
 
 JSON array:"""
-
             response = call_vllm(prompt, max_tokens=1000)
             if not response:
-                continue
-
+                return seg_id, source_id, []
+            m = re.search(r'\[.*\]', response, re.DOTALL)
+            if not m:
+                return seg_id, source_id, []
             try:
-                m = re.search(r'\[.*\]', response, re.DOTALL)
-                if not m:
-                    continue
-                entities = json.loads(m.group())
+                return seg_id, source_id, json.loads(m.group())
+            except:
+                return seg_id, source_id, []
 
-                for ent in entities:
-                    name = ent.get("name", "").strip()
-                    etype = ent.get("type", "technology").lower()
-                    desc = ent.get("description", "")
-                    if not name or len(name) < 2:
+        # Process in parallel batches of 4
+        BATCH_SIZE = 4
+        for batch_start in range(0, len(rows), BATCH_SIZE):
+            if should_stop():
+                break
+            batch = rows[batch_start:batch_start + BATCH_SIZE]
+
+            with ThreadPoolExecutor(max_workers=BATCH_SIZE) as executor:
+                futures = {
+                    executor.submit(_extract_one, sid, stxt, srcid): (sid, srcid)
+                    for sid, stxt, srcid in batch
+                }
+                for future in as_completed(futures):
+                    seg_id, source_id, entities = future.result()
+                    if not entities:
                         continue
+                    try:
+                        for ent in entities:
+                            name = ent.get("name", "").strip()
+                            etype = ent.get("type", "technology").lower()
+                            desc = ent.get("description", "")
+                            if not name or len(name) < 2:
+                                continue
 
-                    eid = gen_id("ENT", f"{etype}_{name}")
-                    conn.execute(text("""
-                        INSERT INTO entities (entity_id, owner_tenant_id, entity_type, canonical_name,
-                            description, status, first_seen_at, last_seen_at, source_count, mention_count)
-                        VALUES (:eid, :tid, :etype, :name, :desc, 'active', NOW(), NOW(), 1, 1)
-                        ON CONFLICT (entity_id) DO UPDATE SET
-                            mention_count = entities.mention_count + 1, last_seen_at = NOW()
-                    """), {"eid": eid, "tid": TENANT, "etype": etype, "name": name, "desc": desc})
+                            eid = gen_id("ENT", f"{etype}_{name}")
+                            conn.execute(text("""
+                                INSERT INTO entities (entity_id, owner_tenant_id, entity_type, canonical_name,
+                                    description, status, first_seen_at, last_seen_at, source_count, mention_count)
+                                VALUES (:eid, :tid, :etype, :name, :desc, 'active', NOW(), NOW(), 1, 1)
+                                ON CONFLICT (entity_id) DO UPDATE SET
+                                    mention_count = entities.mention_count + 1, last_seen_at = NOW()
+                            """), {"eid": eid, "tid": TENANT, "etype": etype, "name": name, "desc": desc})
 
-                    # Provenance
-                    prov_id = gen_id("PROV", f"{eid}_{seg_id}")
-                    conn.execute(text("""
-                        INSERT INTO provenance (provenance_id, target_type, target_id, source_id,
-                            segment_id, extraction_method, extractor_version, confidence)
-                        VALUES (:pid, 'entity', :eid, :src, :seg, 'dream_extract', 'v1', 0.8)
-                        ON CONFLICT (provenance_id) DO NOTHING
-                    """), {"pid": prov_id, "eid": eid, "src": source_id, "seg": seg_id})
+                            prov_id = gen_id("PROV", f"{eid}_{seg_id}")
+                            conn.execute(text("""
+                                INSERT INTO provenance (provenance_id, target_type, target_id, source_id,
+                                    segment_id, extraction_method, extractor_version, confidence)
+                                VALUES (:pid, 'entity', :eid, :src, :seg, 'dream_extract', 'v1', 0.8)
+                                ON CONFLICT (provenance_id) DO NOTHING
+                            """), {"pid": prov_id, "eid": eid, "src": source_id, "seg": seg_id})
 
-                conn.commit()
-                extracted += 1
-                log.info(f"  [{extracted}] {seg_id}: {len(entities)} entities")
-                time.sleep(2)  # Rate limit
-
-            except Exception as e:
-                log.warning(f"  Parse error: {e}")
-                continue
+                        conn.commit()
+                        extracted += 1
+                        log.info(f"  [{extracted}] {seg_id}: {len(entities)} entities")
+                    except Exception as e:
+                        log.warning(f"  Parse error: {e}")
+                        continue
 
         log.info(f"  Extracted from {extracted} segments")
         return extracted
@@ -245,7 +258,6 @@ Summary:"""
                 conn.commit()
                 summarized += 1
                 log.info(f"  [{summarized}] {title}: {len(response)} chars")
-                time.sleep(3)
 
             except Exception as e:
                 log.warning(f"  Summary error: {e}")
@@ -417,7 +429,6 @@ Answer:"""
                 reconciled += 1
 
             conn.commit()
-            time.sleep(3)  # Rate limit vLLM
 
         log.info(f"  Reconciled {reconciled} conflicts")
         return reconciled
@@ -452,7 +463,7 @@ def dream_verify_memories(max_checks=20):
                 JOIN entities e ON c.subject_entity_id = e.entity_id
                 WHERE (e.canonical_name ILIKE :subj OR e.canonical_name ILIKE :subj2)
                 AND c.status = 'active'
-                AND c.predicate ILIKE '%credential%' OR c.predicate ILIKE '%password%' OR c.predicate ILIKE '%pass%'
+                AND (c.predicate ILIKE '%credential%' OR c.predicate ILIKE '%password%' OR c.predicate ILIKE '%pass%')
                 ORDER BY c.created_at DESC
                 LIMIT 3
             """), {"subj": f"%{subject}%", "subj2": subject}).fetchall()

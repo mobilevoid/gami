@@ -1,170 +1,176 @@
 #!/usr/bin/env python3
-"""Chunk oversized segments, then embed all unembedded segments."""
-import os, sys, time, logging, requests, uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
+"""Retroactively chunk large unembedded segments and embed the children.
 
+Finds segments that are >1000 tokens, have no embedding, and aren't already
+marked as chunked. Splits them into child segments, stores children in DB,
+marks parent as chunked, and embeds the children.
+"""
+import os, sys, time, logging, requests, json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from api.config import settings
 from sqlalchemy import create_engine, text
+from parsers.chunker import _count_tokens, _split_paragraphs, _split_sentences, _merge_chunks
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s",
+                   handlers=[logging.FileHandler("/tmp/chunk_embed.log"), logging.StreamHandler()])
 log = logging.getLogger("chunk_embed")
+engine = create_engine(settings.DATABASE_URL_SYNC)
 
-MAX_EMBED_CHARS = 6000  # ~1500 tokens, safe for nomic-embed-text (8192 token limit)
-WORKERS = 4
+OLLAMA_URL = settings.OLLAMA_URL + "/api/embeddings"
+MODEL = settings.EMBEDDING_MODEL
 
-def chunk_text(full_text, max_chars=MAX_EMBED_CHARS):
-    """Split text into chunks at paragraph boundaries."""
-    if len(full_text) <= max_chars:
-        return [full_text]
-    
-    chunks = []
-    paragraphs = full_text.split('\n\n')
-    current = ""
-    
-    for para in paragraphs:
-        if len(current) + len(para) + 2 > max_chars and current:
-            chunks.append(current.strip())
-            current = para
-        else:
-            current = current + "\n\n" + para if current else para
-    
-    if current.strip():
-        chunks.append(current.strip())
-    
-    # If any chunk is still too large, split on newlines
-    final = []
-    for chunk in chunks:
-        if len(chunk) <= max_chars:
-            final.append(chunk)
-        else:
-            lines = chunk.split('\n')
-            sub = ""
-            for line in lines:
-                if len(sub) + len(line) + 1 > max_chars and sub:
-                    final.append(sub.strip())
-                    sub = line
-                else:
-                    sub = sub + "\n" + line if sub else line
-            if sub.strip():
-                final.append(sub.strip())
-    
-    return final if final else [full_text[:max_chars]]
+def embed_one(txt):
+    r = requests.post(OLLAMA_URL, json={"model": MODEL, "prompt": txt[:2000]}, timeout=15)
+    r.raise_for_status()
+    return r.json()["embedding"]
 
-def embed_one(seg_id, seg_text):
-    try:
-        r = requests.post(f"{settings.OLLAMA_URL}/api/embeddings",
-                         json={"model": settings.EMBEDDING_MODEL, "prompt": seg_text}, timeout=60)
-        if r.status_code == 200:
-            return seg_id, r.json()["embedding"]
-    except:
-        pass
-    return seg_id, None
 
-def main():
-    engine = create_engine(settings.DATABASE_URL_SYNC, pool_size=5)
-    
+def chunk_text(text_content, threshold=1000):
+    """Split text into chunks if over threshold tokens."""
+    tokens = _count_tokens(text_content)
+    if tokens <= threshold:
+        return None  # No chunking needed
+
+    pieces = _split_paragraphs(text_content)
+    if len(pieces) <= 1:
+        pieces = _split_sentences(text_content)
+    if len(pieces) <= 1:
+        return None  # Can't split
+
+    merged = _merge_chunks(pieces, 600, 800, threshold)
+    if len(merged) <= 1:
+        return None
+    return merged
+
+
+def run():
     with engine.connect() as conn:
-        # Step 1: Chunk oversized segments that don't have children yet
-        log.info("Step 1: Chunking oversized segments...")
-        oversized = conn.execute(text("""
-            SELECT s.segment_id, s.text, s.source_id, s.owner_tenant_id, s.segment_type
-            FROM segments s
-            WHERE length(s.text) > :max_chars
-            AND s.embedding IS NULL
-            AND NOT EXISTS (
-                SELECT 1 FROM segments c WHERE c.parent_segment_id = s.segment_id
-            )
-        """), {"max_chars": MAX_EMBED_CHARS}).fetchall()
-        
-        log.info(f"Found {len(oversized)} oversized segments to chunk")
-        chunks_created = 0
-        
-        for row in oversized:
-            seg_id, full_text, source_id, tenant_id, seg_type = row
-            chunks = chunk_text(full_text)
-            
-            if len(chunks) <= 1:
-                continue  # Already fits
-            
-            for i, chunk_text_str in enumerate(chunks):
-                chunk_id = f"{seg_id}_chunk_{i}"
-                char_start = full_text.find(chunk_text_str[:100])
-                char_end = char_start + len(chunk_text_str) if char_start >= 0 else None
-                
-                conn.execute(text("""
-                    INSERT INTO segments (segment_id, source_id, owner_tenant_id, parent_segment_id,
-                        segment_type, ordinal, depth, text, token_count, char_start, char_end,
-                        quality_flags_json, storage_tier)
-                    VALUES (:sid, :src, :tid, :parent, 'chunk', :ord, 1, :txt, :tc,
-                        :cs, :ce, '{"is_chunk": true}'::jsonb, 'hot')
-                    ON CONFLICT (segment_id) DO NOTHING
-                """), {
-                    "sid": chunk_id, "src": source_id, "tid": tenant_id,
-                    "parent": seg_id, "ord": i, "txt": chunk_text_str,
-                    "tc": len(chunk_text_str) // 4,  # rough token estimate
-                    "cs": char_start if char_start >= 0 else None,
-                    "ce": char_end,
-                })
-                chunks_created += 1
-            
-            # Mark parent as "chunked" — we'll embed children instead
+        # Find unchunked, unembedded segments
+        rows = conn.execute(text("""
+            SELECT segment_id, source_id, owner_tenant_id, text,
+                   segment_type, title_or_heading, speaker_role, speaker_name,
+                   message_timestamp, parent_segment_id, ordinal
+            FROM segments
+            WHERE embedding IS NULL
+              AND length(text) >= 20
+              AND (quality_flags_json->>'chunked' IS NULL
+                   OR quality_flags_json->>'chunked' != 'true')
+            ORDER BY length(text) DESC
+        """)).fetchall()
+
+        total = len(rows)
+        log.info(f"Found {total} unchunked unembedded segments")
+
+        chunked_count = 0
+        children_created = 0
+        children_embedded = 0
+        direct_embedded = 0
+        skipped = 0
+
+        for row in rows:
+            sid = row.segment_id
+            txt = row.text
+            tokens = _count_tokens(txt)
+
+            if tokens <= 1000:
+                # Small enough to embed directly
+                try:
+                    time.sleep(0.2)
+                    emb = embed_one(txt)
+                    vec = "[" + ",".join(str(v) for v in emb) + "]"
+                    conn.execute(text(
+                        "UPDATE segments SET embedding = CAST(:v AS vector) WHERE segment_id = :s"
+                    ), {"v": vec, "s": sid})
+                    direct_embedded += 1
+                except Exception as e:
+                    skipped += 1
+                    if skipped <= 5:
+                        log.warning(f"Embed failed {sid}: {str(e)[:60]}")
+                continue
+
+            # Chunk the segment
+            chunks = chunk_text(txt)
+            if not chunks:
+                # Can't chunk, embed truncated version
+                try:
+                    time.sleep(0.2)
+                    emb = embed_one(txt[:2000])
+                    vec = "[" + ",".join(str(v) for v in emb) + "]"
+                    conn.execute(text(
+                        "UPDATE segments SET embedding = CAST(:v AS vector) WHERE segment_id = :s"
+                    ), {"v": vec, "s": sid})
+                    direct_embedded += 1
+                except:
+                    skipped += 1
+                continue
+
+            # Create child segments and embed them
+            for idx, chunk in enumerate(chunks):
+                child_id = f"{sid}_chunk_{idx}"
+
+                # Check if child already exists
+                exists = conn.execute(text(
+                    "SELECT 1 FROM segments WHERE segment_id = :cid"
+                ), {"cid": child_id}).fetchone()
+
+                if not exists:
+                    # Insert child segment
+                    conn.execute(text("""
+                        INSERT INTO segments (segment_id, source_id, owner_tenant_id, text,
+                            segment_type, title_or_heading, speaker_role, speaker_name,
+                            message_timestamp, parent_segment_id, ordinal, depth,
+                            token_count, quality_flags_json)
+                        VALUES (:cid, :src, :tenant, :txt, :stype, :heading, :srole, :sname,
+                            :ts, :parent, :ord, 1, :tc, '{"is_chunk": true}'::jsonb)
+                        ON CONFLICT (segment_id) DO NOTHING
+                    """), {
+                        "cid": child_id,
+                        "src": row.source_id,
+                        "tenant": row.owner_tenant_id,
+                        "txt": chunk,
+                        "stype": row.segment_type,
+                        "heading": row.title_or_heading,
+                        "srole": row.speaker_role,
+                        "sname": row.speaker_name,
+                        "ts": row.message_timestamp,
+                        "parent": sid,
+                        "ord": (row.ordinal or 0) * 1000 + idx,
+                        "tc": _count_tokens(chunk),
+                    })
+                    children_created += 1
+
+                # Embed the child
+                try:
+                    time.sleep(0.2)
+                    emb = embed_one(chunk)
+                    vec = "[" + ",".join(str(v) for v in emb) + "]"
+                    conn.execute(text(
+                        "UPDATE segments SET embedding = CAST(:v AS vector) WHERE segment_id = :cid"
+                    ), {"v": vec, "cid": child_id})
+                    children_embedded += 1
+                except Exception as e:
+                    if skipped <= 5:
+                        log.warning(f"Child embed failed {child_id}: {str(e)[:60]}")
+                    skipped += 1
+
+            # Mark parent as chunked
             conn.execute(text("""
-                UPDATE segments SET quality_flags_json = quality_flags_json || '{"chunked": true}'::jsonb
-                WHERE segment_id = :sid
-            """), {"sid": seg_id})
-        
+                UPDATE segments
+                SET quality_flags_json = COALESCE(quality_flags_json, '{}'::jsonb) || '{"chunked": "true"}'::jsonb
+                WHERE segment_id = :s
+            """), {"s": sid})
+            chunked_count += 1
+
+            if (chunked_count + direct_embedded) % 20 == 0:
+                conn.commit()
+                log.info(f"Progress: {chunked_count} chunked ({children_created} children, "
+                        f"{children_embedded} embedded), {direct_embedded} direct, {skipped} skipped")
+
         conn.commit()
-        log.info(f"Created {chunks_created} chunk segments from {len(oversized)} parents")
-        
-        # Step 2: Embed all segments that need it (skip chunked parents, embed their children)
-        total = conn.execute(text("""
-            SELECT count(*) FROM segments 
-            WHERE embedding IS NULL 
-            AND (quality_flags_json->>'chunked' IS NULL OR quality_flags_json->>'chunked' = 'false')
-        """)).scalar()
-        log.info(f"Step 2: Embedding {total} segments...")
-        
-        embedded = errors = 0
-        start = time.time()
-        
-        while True:
-            rows = conn.execute(text("""
-                SELECT segment_id, text FROM segments 
-                WHERE embedding IS NULL 
-                AND (quality_flags_json->>'chunked' IS NULL OR quality_flags_json->>'chunked' = 'false')
-                LIMIT 100
-            """)).fetchall()
-            
-            if not rows:
-                break
-            
-            with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-                futures = {pool.submit(embed_one, r[0], r[1]): r[0] for r in rows}
-                for f in as_completed(futures):
-                    sid, emb = f.result()
-                    if emb:
-                        vec = "[" + ",".join(str(v) for v in emb) + "]"
-                        conn.execute(text(
-                            "UPDATE segments SET embedding = CAST(:v AS vector) WHERE segment_id = :s"
-                        ), {"v": vec, "s": sid})
-                        embedded += 1
-                    else:
-                        errors += 1
-            
-            conn.commit()
-            elapsed = time.time() - start
-            rate = embedded / elapsed if elapsed > 0 else 0
-            remaining = (total - embedded) / rate if rate > 0 else 0
-            if embedded % 500 == 0 or embedded < 200:
-                log.info(f"{embedded}/{total} ({rate:.0f}/s, ~{remaining/60:.1f}min left, {errors} err)")
-        
-        elapsed = time.time() - start
-        
-        # Final stats
-        final_embedded = conn.execute(text("SELECT count(*) FROM segments WHERE embedding IS NOT NULL")).scalar()
-        final_total = conn.execute(text("SELECT count(*) FROM segments")).scalar()
-        log.info(f"Done: {embedded} new embeds in {elapsed:.0f}s. Total: {final_embedded}/{final_total} embedded.")
+        log.info(f"DONE: {chunked_count} chunked -> {children_created} children ({children_embedded} embedded), "
+                f"{direct_embedded} direct embedded, {skipped} skipped")
+
 
 if __name__ == "__main__":
-    main()
+    run()
