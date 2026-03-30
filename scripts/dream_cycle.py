@@ -83,7 +83,7 @@ def call_vllm(prompt, max_tokens=1500):
         }, timeout=120)
         if r.status_code == 200:
             content = r.json()["choices"][0]["message"]["content"]
-            # Strip thinking blocks
+            # Strip thinking blocks (XML-style)
             content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
             return content
     except Exception as e:
@@ -98,12 +98,12 @@ def gen_id(prefix, name):
 # ============================================================
 # Phase 1: Entity Extraction from Un-Processed Segments
 # ============================================================
-def dream_extract(max_segments=50):
+def dream_extract(max_segments=10000):
     """Extract entities from segments that haven't been processed yet."""
     log.info("=== Dream Phase 1: Entity Extraction ===")
 
     with engine.connect() as conn:
-        # Find segments with infrastructure content that don't have extractions
+        # Find segments that don't have extractions yet (no keyword filter — process everything)
         rows = conn.execute(text("""
             SELECT s.segment_id, s.text, s.source_id
             FROM segments s
@@ -113,9 +113,6 @@ def dream_extract(max_segments=50):
             AND NOT EXISTS (
                 SELECT 1 FROM provenance p WHERE p.segment_id = s.segment_id
             )
-            AND (s.text ILIKE '%CT%' OR s.text ILIKE '%192.168%' OR s.text ILIKE '%pfSense%'
-                 OR s.text ILIKE '%backup%' OR s.text ILIKE '%server%' OR s.text ILIKE '%install%'
-                 OR s.text ILIKE '%deploy%' OR s.text ILIKE '%config%')
             ORDER BY s.created_at DESC
             LIMIT :lim
         """), {"tid": TENANT, "lim": max_segments}).fetchall()
@@ -125,7 +122,7 @@ def dream_extract(max_segments=50):
 
         def _extract_one(seg_id, seg_text, source_id):
             """Extract entities from a single segment (runs in thread pool)."""
-            prompt = f"""Extract named entities from this text. Return a JSON array.
+            prompt = f"""Extract named entities from this text. Return ONLY a JSON array, no explanation.
 Each entity: {{"name": "...", "type": "infrastructure|service|technology|person|credential|concept", "description": "one line"}}
 Focus on: server names, IPs, CTs, services, credentials, tools.
 
@@ -136,16 +133,24 @@ JSON array:"""
             response = call_vllm(prompt, max_tokens=1000)
             if not response:
                 return seg_id, source_id, []
-            m = re.search(r'\[.*\]', response, re.DOTALL)
-            if not m:
-                return seg_id, source_id, []
-            try:
-                return seg_id, source_id, json.loads(m.group())
-            except:
-                return seg_id, source_id, []
+            # Find JSON array — try progressively from the end since thinking text comes first
+            # Look for balanced [...] starting from the last '[' that parses as valid JSON
+            for i in range(len(response) - 1, -1, -1):
+                if response[i] == ']':
+                    # Find matching '['
+                    for j in range(i, -1, -1):
+                        if response[j] == '[':
+                            try:
+                                entities = json.loads(response[j:i+1])
+                                if isinstance(entities, list):
+                                    return seg_id, source_id, entities
+                            except json.JSONDecodeError:
+                                continue
+                    break  # Only try the last ']'
+            return seg_id, source_id, []
 
         # Process in parallel batches of 4
-        BATCH_SIZE = 4
+        BATCH_SIZE = 8
         for batch_start in range(0, len(rows), BATCH_SIZE):
             if should_stop():
                 break
