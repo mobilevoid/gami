@@ -1747,10 +1747,40 @@ async def _tenant_search(args: dict) -> dict:
     tenant_id = args["tenant_id"]
     max_results = min(args.get("max_results", 10), 50)
 
-    # Get query embedding
+    # Get query embedding — use the right method for this tenant
+    # GPU tenants (books, manuals, whitepapers) need GPU GGUF embeddings
+    # Ollama tenants use the standard embed_text
+    embed_method = "ollama"
     try:
-        query_embedding = await embed_text(query, is_query=True)
-        vec_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
+        tier_row = await AsyncSessionLocal().execute(
+            sql_text("SELECT config_json->>'embedding_method' FROM tenants WHERE tenant_id = :tid"),
+            {"tid": tenant_id},
+        )
+        embed_method = tier_row.scalar() or "ollama"
+    except Exception:
+        pass
+
+    try:
+        if embed_method == "gpu_gguf":
+            # Use GGUF model for GPU tenants — must match their stored embeddings
+            import subprocess
+            result = subprocess.run(
+                ["python3", "-c",
+                 f"import sys; sys.path.insert(0,'/opt/gami'); "
+                 f"from scripts.gpu_embed_gguf import embed_query; "
+                 f"emb = embed_query({query!r}); "
+                 f"print(','.join(str(v) for v in emb))"],
+                capture_output=True, text=True, timeout=30,
+                env={**__import__("os").environ, "LD_PRELOAD": "/usr/lib/x86_64-linux-gnu/libstdc++.so.6"},
+            )
+            if result.returncode == 0:
+                query_embedding = [float(v) for v in result.stdout.strip().split(",")]
+                vec_str = "[" + result.stdout.strip() + "]"
+            else:
+                raise RuntimeError(f"GPU embed failed: {result.stderr[:200]}")
+        else:
+            query_embedding = await embed_text(query, is_query=True)
+            vec_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
     except Exception as e:
         logger.warning("Embedding failed, falling back to lexical-only: %s", e)
         query_embedding = None
