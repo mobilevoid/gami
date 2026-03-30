@@ -882,6 +882,94 @@ async def _store_extractions(args: dict) -> dict:
     return {"stored": stored, "segment_id": segment_id}
 
 
+async def _run_haiku_extraction(args: dict) -> dict:
+    """Trigger the Haiku agent extraction pipeline.
+
+    Spawns process_segments.sh in the background, which:
+    1. Ensures Ollama is running for embeddings
+    2. Launches a Claude Code Haiku agent to extract entities
+    Uses OAuth billing — no API key needed, works without GPU.
+    """
+    import subprocess
+    import shutil
+
+    limit = args.get("limit", 10)
+    script = "/opt/gami/cli/process_segments.sh"
+
+    # Check prerequisites
+    checks = {}
+
+    # Check Ollama
+    try:
+        import requests as req
+        r = req.get("http://localhost:11434/api/tags", timeout=3)
+        checks["ollama"] = "running" if r.status_code == 200 else "down"
+    except Exception:
+        checks["ollama"] = "unreachable"
+
+    # Check claude CLI
+    checks["claude_cli"] = "found" if shutil.which("claude") else "not_found"
+
+    # Check vLLM (to report GPU status)
+    try:
+        import requests as req
+        r = req.get("http://localhost:8000/v1/models", timeout=3)
+        checks["vllm_gpu"] = "running" if r.status_code == 200 else "down"
+    except Exception:
+        checks["vllm_gpu"] = "unavailable"
+
+    # Check unprocessed count
+    from api.services.db import AsyncSessionLocal
+    from sqlalchemy import text as sql_text
+    async with AsyncSessionLocal() as db:
+        row = await db.execute(sql_text(
+            "SELECT count(*) FROM segments s "
+            "WHERE length(s.text) BETWEEN 200 AND 3000 "
+            "AND s.owner_tenant_id = 'claude-opus' "
+            "AND s.segment_type NOT IN ('tool_call', 'tool_result', 'chunk') "
+            "AND NOT EXISTS (SELECT 1 FROM provenance p WHERE p.segment_id = s.segment_id)"
+        ))
+        checks["unprocessed_segments"] = row.scalar()
+
+    if checks["claude_cli"] == "not_found":
+        return {
+            "status": "error",
+            "message": "Claude CLI not found. Install Claude Code to use Haiku extraction.",
+            "checks": checks,
+        }
+
+    if checks["unprocessed_segments"] == 0:
+        return {
+            "status": "skipped",
+            "message": "No unprocessed segments to extract from.",
+            "checks": checks,
+        }
+
+    # Launch the extraction script in the background
+    try:
+        proc = subprocess.Popen(
+            [script],
+            stdout=open("/tmp/gami-process-segments.log", "a"),
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        return {
+            "status": "started",
+            "pid": proc.pid,
+            "message": f"Haiku extraction pipeline started (PID {proc.pid}). "
+                       f"{checks['unprocessed_segments']} segments to process. "
+                       f"GPU: {checks['vllm_gpu']}, Ollama: {checks['ollama']}. "
+                       f"Monitor: tail -f /tmp/gami-process-segments.log",
+            "checks": checks,
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Failed to start extraction: {e}",
+            "checks": checks,
+        }
+
+
 # ---------------------------------------------------------------------------
 # Handler map
 # ---------------------------------------------------------------------------
@@ -900,6 +988,7 @@ TOOL_HANDLERS = {
     "admin_stats": _admin_stats,
     "get_unprocessed_segments": _get_unprocessed_segments,
     "store_extractions": _store_extractions,
+    "run_haiku_extraction": _run_haiku_extraction,
 }
 
 

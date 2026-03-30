@@ -419,6 +419,26 @@ TOOL_DEFINITIONS = {
             "required": ["segment_id", "entities"],
         },
     },
+    "run_haiku_extraction": {
+        "name": "run_haiku_extraction",
+        "description": (
+            "Trigger the Haiku agent extraction pipeline. Spawns a Claude Code Haiku "
+            "agent that extracts entities from unprocessed segments using OAuth billing. "
+            "Works without GPU — use this when vLLM is down or the GPU is busy. "
+            "Checks Ollama status, Claude CLI availability, and unprocessed segment count."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Max segments for the agent to process",
+                    "default": 10,
+                },
+            },
+            "required": [],
+        },
+    },
 }
 
 DREAM_TOOLS = [
