@@ -9,12 +9,12 @@ from api.config import settings
 logger = logging.getLogger(__name__)
 
 
-async def embed_text(text: str) -> list[float]:
+async def embed_text(text: str, is_query: bool = False) -> list[float]:
     """Get embedding for a single text using Ollama nomic-embed-text."""
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{settings.OLLAMA_URL}/api/embeddings",
-            json={"model": settings.EMBEDDING_MODEL, "prompt": text},
+            json={"model": settings.EMBEDDING_MODEL, "prompt": ("search_query: " + text if is_query else text)},
             timeout=30.0,
         )
         resp.raise_for_status()
@@ -32,20 +32,20 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
         for text in texts:
             resp = await client.post(
                 f"{settings.OLLAMA_URL}/api/embeddings",
-                json={"model": settings.EMBEDDING_MODEL, "prompt": text},
+                json={"model": settings.EMBEDDING_MODEL, "prompt": ("search_query: " + text if is_query else text)},
             )
             resp.raise_for_status()
             results.append(resp.json()["embedding"])
     return results
 
 
-def embed_text_sync(text: str) -> list[float]:
+def embed_text_sync(text: str, is_query: bool = False) -> list[float]:
     """Sync version for Celery workers."""
     import requests
 
     resp = requests.post(
         f"{settings.OLLAMA_URL}/api/embeddings",
-        json={"model": settings.EMBEDDING_MODEL, "prompt": text},
+        json={"model": settings.EMBEDDING_MODEL, "prompt": ("search_query: " + text if is_query else text)},
         timeout=30.0,
     )
     resp.raise_for_status()
@@ -61,7 +61,7 @@ def embed_texts_sync(texts: list[str]) -> list[list[float]]:
     for text in texts:
         resp = session.post(
             f"{settings.OLLAMA_URL}/api/embeddings",
-            json={"model": settings.EMBEDDING_MODEL, "prompt": text},
+            json={"model": settings.EMBEDDING_MODEL, "prompt": ("search_query: " + text if is_query else text)},
             timeout=30.0,
         )
         resp.raise_for_status()

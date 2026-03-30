@@ -253,7 +253,7 @@ async def recall(
         logger.debug("Hot cache check failed (non-critical): %s", exc)
 
     # 3. Embed query
-    query_embedding = await embed_text(query)
+    query_embedding = await embed_text(query, is_query=False)
 
     # 4. Parallel anchor retrieval (vector + lexical via hybrid)
     t_search = time.monotonic()

@@ -115,7 +115,7 @@ def parse_json_from_llm(text_str: str):
 
 _last_request_time = 0.0
 
-def call_vllm(prompt: str, system_prompt: str, max_tokens: int = 4096) -> str:
+def call_vllm(prompt: str, system_prompt: str, max_tokens: int = 1500) -> str:
     global _last_request_time
     elapsed = time.time() - _last_request_time
     if elapsed < MIN_INTERVAL:
@@ -132,7 +132,7 @@ def call_vllm(prompt: str, system_prompt: str, max_tokens: int = 4096) -> str:
         "temperature": 0.1,
         "chat_template_kwargs": {"enable_thinking": False},
     }
-    resp = requests.post(f"{VLLM_URL}/chat/completions", json=payload, timeout=300)
+    resp = requests.post(f"{VLLM_URL}/chat/completions", json=payload, timeout=120)
     _last_request_time = time.time()
     resp.raise_for_status()
     data = resp.json()
@@ -193,7 +193,7 @@ Return ONLY a valid JSON array, no other text."""
 # ---------------------------------------------------------------------------
 
 def extract_entities_from_text(db, text_content: str, source_id: str, segment_id: str) -> list[dict]:
-    input_text = text_content[:6000]
+    input_text = text_content[:3000]
     prompt = ENTITY_PROMPT.format(text=input_text)
     system_prompt = "You are a precise entity extraction system. Return ONLY valid JSON arrays. No explanations."
 
@@ -293,7 +293,7 @@ def extract_entities_from_text(db, text_content: str, source_id: str, segment_id
 
 def extract_claims_from_text(db, text_content: str, source_id: str,
                               segment_id: str, entity_map: dict) -> list[dict]:
-    input_text = text_content[:6000]
+    input_text = text_content[:3000]
     prompt = CLAIM_PROMPT.format(text=input_text)
     system_prompt = "You are a precise claim extraction system. Return ONLY valid JSON arrays. No explanations."
 
