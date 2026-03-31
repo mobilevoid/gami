@@ -76,14 +76,25 @@ def _get_ocr_model():
 
 
 _ocr_model = None
+_ocr_init_attempted = False
 
 
 def get_ocr():
     """Get the singleton OCR model."""
-    global _ocr_model
-    if _ocr_model is None:
+    global _ocr_model, _ocr_init_attempted
+    if _ocr_model is None and not _ocr_init_attempted:
+        _ocr_init_attempted = True
         _ocr_model = _get_ocr_model()
+        if _ocr_model:
+            logger.info(f"doctr OCR model loaded (GPU: {HAS_DOCTR_GPU})")
+        else:
+            logger.warning("doctr OCR model failed to load — scanned pages will use pdfplumber fallback")
     return _ocr_model
+
+
+def init_ocr():
+    """Pre-initialize OCR model. Call this before any forking."""
+    return get_ocr()
 
 
 def _ocr_page_doctr(page_image_bytes: bytes) -> str:
@@ -347,13 +358,9 @@ class PdfParser(BaseParser):
 
             # Step 2: Check if OCR is needed
             if _page_needs_ocr(text, page):
-                # Try pdfplumber first (fast, no model loading)
-                plumber_text = _extract_with_pdfplumber(file_path, page_num)
-                if len(plumber_text) > len(text):
-                    text = plumber_text
-
-                # If still sparse and GPU OCR available, use doctr
-                if len(text.strip()) < MIN_CHARS_PER_PAGE and HAS_DOCTR and HAS_DOCTR_GPU:
+                # If GPU OCR available, use it FIRST (fast — ~0.8s/page)
+                # Skip pdfplumber on sparse pages — it's 60s+ per page on scanned PDFs
+                if HAS_DOCTR and HAS_DOCTR_GPU:
                     img_bytes = _ocr_page_fitz(page)
                     if img_bytes:
                         ocr_text = _ocr_page_doctr(img_bytes)
@@ -361,7 +368,13 @@ class PdfParser(BaseParser):
                             text = ocr_text
                             ocr_pages += 1
 
-                # If still no text, flag for future OCR (don't block on CPU OCR)
+                # No GPU OCR: try pdfplumber as fallback (slow but better than nothing)
+                if len(text.strip()) < MIN_CHARS_PER_PAGE and not (HAS_DOCTR and HAS_DOCTR_GPU):
+                    plumber_text = _extract_with_pdfplumber(file_path, page_num)
+                    if len(plumber_text) > len(text):
+                        text = plumber_text
+
+                # If still no text, flag for future OCR
                 if len(text.strip()) < MIN_CHARS_PER_PAGE:
                     text = f"[OCR_NEEDED: page {page_num + 1} — scanned image, text extraction failed]"
                     ocr_pages += 1
