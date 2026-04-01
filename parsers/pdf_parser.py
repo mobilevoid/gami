@@ -98,11 +98,20 @@ def init_ocr():
 
 
 def _ocr_page_doctr(page_image_bytes: bytes) -> str:
-    """OCR a single page image using doctr."""
+    """OCR a single page image using doctr on GPU."""
     model = get_ocr()
     if model is None:
         return ""
     try:
+        # Force GPU: move model to CUDA before every call
+        if HAS_DOCTR_GPU:
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    model = model.cuda()
+            except Exception:
+                pass
+
         doc = DocumentFile.from_images([page_image_bytes])
         result = model(doc)
         # Extract text from doctr result
@@ -338,6 +347,27 @@ class PdfParser(BaseParser):
         fname = os.path.basename(file_path)
         logger.info(f"Parsing PDF: {fname}")
 
+        # Detect DjVu files masquerading as PDF
+        try:
+            with open(file_path, "rb") as f:
+                magic = f.read(8)
+            if magic[:4] == b"AT&T" or magic[:8] == b"FORM\x00\x00":
+                # It's a DjVu file — convert to PDF first
+                import subprocess, tempfile
+                logger.info(f"  Detected DjVu format — converting to PDF")
+                tmp_pdf = tempfile.mktemp(suffix=".pdf")
+                result = subprocess.run(
+                    ["ddjvu", "-format=pdf", "-quality=85", file_path, tmp_pdf],
+                    capture_output=True, timeout=300,
+                )
+                if result.returncode == 0 and os.path.exists(tmp_pdf):
+                    file_path = tmp_pdf
+                    metadata["converted_from"] = "djvu"
+                else:
+                    raise RuntimeError(f"DjVu conversion failed: {result.stderr[:200]}")
+        except (ImportError, FileNotFoundError):
+            pass  # ddjvu not installed — try opening as-is
+
         doc = fitz.open(file_path)
         total_pages = len(doc)
 
@@ -356,25 +386,21 @@ class PdfParser(BaseParser):
             # Step 1: Try direct text extraction
             text = _extract_page_text_fitz(page)
 
-            # Step 2: Check if OCR is needed
+            # Step 2: OCR if needed
+            # Step 2: OCR if needed — tesseract is fast and reliable
             if _page_needs_ocr(text, page):
-                # If GPU OCR available, use it FIRST (fast — ~0.8s/page)
-                # Skip pdfplumber on sparse pages — it's 60s+ per page on scanned PDFs
-                if HAS_DOCTR and HAS_DOCTR_GPU:
-                    img_bytes = _ocr_page_fitz(page)
-                    if img_bytes:
+                img_bytes = _ocr_page_fitz(page)
+                if img_bytes:
+                    if HAS_TESSERACT:
+                        ocr_text = _ocr_page_tesseract(img_bytes)
+                    elif HAS_DOCTR:
                         ocr_text = _ocr_page_doctr(img_bytes)
-                        if len(ocr_text) > len(text):
-                            text = ocr_text
-                            ocr_pages += 1
+                    else:
+                        ocr_text = ""
+                    if len(ocr_text) > len(text):
+                        text = ocr_text
+                        ocr_pages += 1
 
-                # No GPU OCR: try pdfplumber as fallback (slow but better than nothing)
-                if len(text.strip()) < MIN_CHARS_PER_PAGE and not (HAS_DOCTR and HAS_DOCTR_GPU):
-                    plumber_text = _extract_with_pdfplumber(file_path, page_num)
-                    if len(plumber_text) > len(text):
-                        text = plumber_text
-
-                # If still no text, flag for future OCR
                 if len(text.strip()) < MIN_CHARS_PER_PAGE:
                     text = f"[OCR_NEEDED: page {page_num + 1} — scanned image, text extraction failed]"
                     ocr_pages += 1
@@ -451,3 +477,26 @@ class PdfParser(BaseParser):
                 **(metadata or {}),
             },
         )
+
+
+# Tesseract OCR — faster and more reliable than doctr
+HAS_TESSERACT = False
+try:
+    import pytesseract
+    from PIL import Image as PILImage
+    pytesseract.image_to_string(PILImage.new('RGB', (10, 10)))  # Quick test
+    HAS_TESSERACT = True
+except Exception:
+    pass
+
+
+def _ocr_page_tesseract(page_image_bytes: bytes) -> str:
+    """OCR a page using Tesseract — fast, reliable, CPU-based."""
+    if not HAS_TESSERACT:
+        return ""
+    try:
+        img = PILImage.open(io.BytesIO(page_image_bytes))
+        return pytesseract.image_to_string(img).strip()
+    except Exception as e:
+        logger.warning(f"Tesseract OCR failed: {e}")
+        return ""
