@@ -1230,18 +1230,28 @@ def dream(duration=None, phase=None, check_idle=False):
         ("auto_approve", dream_auto_approve),
     ]
 
-    for phase_name, phase_fn in phases:
-        if should_stop() or time.time() > deadline:
-            break
-        if phase and phase != phase_name:
-            continue
+    cycle = 0
+    while not should_stop() and time.time() < deadline:
+        cycle += 1
+        log.info(f"--- Dream cycle {cycle} ---")
 
-        try:
-            result = phase_fn()
-            stats[phase_name] = result
-        except Exception as e:
-            log.error(f"Phase {phase_name} failed: {e}")
-            stats[phase_name] = f"error: {e}"
+        for phase_name, phase_fn in phases:
+            if should_stop() or time.time() > deadline:
+                break
+            if phase and phase != phase_name:
+                continue
+
+            try:
+                result = phase_fn()
+                stats[phase_name] = result
+            except Exception as e:
+                log.error(f"Phase {phase_name} failed: {e}")
+                stats[phase_name] = f"error: {e}"
+
+        # Brief pause between cycles
+        if not should_stop() and time.time() < deadline:
+            log.info(f"Cycle {cycle} complete, {(deadline - time.time())/3600:.1f} hours remaining")
+            time.sleep(10)
 
     elapsed = time.time() - start
 
