@@ -668,7 +668,12 @@ def dream_auto_approve():
             if should_stop():
                 break
 
-            state = json.loads(prop.proposed_state_json) if prop.proposed_state_json else {}
+            if isinstance(prop.proposed_state_json, dict):
+                state = prop.proposed_state_json
+            elif prop.proposed_state_json:
+                state = json.loads(prop.proposed_state_json)
+            else:
+                state = {}
 
             # Skip credential-related changes — always require human review
             is_credential = (
