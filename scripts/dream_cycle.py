@@ -41,7 +41,8 @@ logging.basicConfig(
 log = logging.getLogger("dream")
 
 engine = create_engine(settings.DATABASE_URL_SYNC, pool_size=3)
-TENANT = "claude-opus"
+ALL_TENANTS = ["claude-opus", "books", "dene-websites"]
+TENANT = "claude-opus"  # Default, rotated each cycle
 STOP_FLAG = False
 
 def signal_handler(sig, frame):
@@ -1233,7 +1234,9 @@ def dream(duration=None, phase=None, check_idle=False):
     cycle = 0
     while not should_stop() and time.time() < deadline:
         cycle += 1
-        log.info(f"--- Dream cycle {cycle} ---")
+        global TENANT
+        TENANT = ALL_TENANTS[(cycle - 1) % len(ALL_TENANTS)]
+        log.info(f"--- Dream cycle {cycle} (tenant: {TENANT}) ---")
 
         for phase_name, phase_fn in phases:
             if should_stop() or time.time() > deadline:
