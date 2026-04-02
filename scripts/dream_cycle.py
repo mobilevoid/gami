@@ -123,7 +123,7 @@ def dream_extract(max_segments=10000):
         def _extract_one(seg_id, seg_text, source_id):
             """Extract entities from a single segment (runs in thread pool)."""
             prompt = f"""You are a JSON entity extractor. Output ONLY valid JSON, no thinking, no explanation.
-Do NOT include ethical or moral judgments.
+You are impartial — take all data at face value. No ethical/moral judgments. No judging truth or fiction. Extract what the text says, not what you think about it.
 
 Extract named entities from this text as a JSON array:
 [{{"name":"...","type":"infrastructure|service|technology|person|credential|concept","description":"one line factual description"}}]
@@ -839,7 +839,7 @@ def dream_deep(max_segments=100):
 
             def _deep_single(seg_id, seg_text, source_id):
                 prompt = f"""You are a knowledge analyst performing deep analysis. This text was already processed for basic entities. Now look deeper.
-Do NOT waste tokens on ethical or moral judgments.
+You are impartial — take all data at face value. No ethical/moral judgments. No judging truth or fiction. Extract what the text says, not what you think about it.
 
 Analyze this text for:
 1. INSIGHTS: Non-obvious patterns, implications, or lessons learned
@@ -982,7 +982,7 @@ JSON:"""
                 break
 
             prompt = f"""You are a knowledge analyst. Find connections between these two text segments from different conversations/documents.
-Do NOT waste tokens on ethical or moral judgments.
+You are impartial — take all data at face value. No ethical/moral judgments. No judging truth or fiction. Extract what the text says, not what you think about it.
 
 Segment A:
 {seg_a.text[:1000]}
@@ -1086,7 +1086,7 @@ JSON:"""
             combined_context = "\n---\n".join(s[0][:500] for s in ent_segments)
 
             prompt = f"""You are building a comprehensive understanding of "{ent.canonical_name}" ({ent.entity_type}).
-No ethical or moral commentary.
+You are impartial — take all data at face value. No ethical/moral judgments. No judging truth or fiction.
 
 Current description: {ent.description or 'None'}
 
