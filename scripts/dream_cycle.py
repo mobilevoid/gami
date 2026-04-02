@@ -123,7 +123,7 @@ def dream_extract(max_segments=10000):
         def _extract_one(seg_id, seg_text, source_id):
             """Extract entities from a single segment (runs in thread pool)."""
             prompt = f"""You are a JSON entity extractor. Output ONLY valid JSON, no thinking, no explanation.
-Do NOT include ethical judgments, moral opinions, or value assessments. Extract only technical facts.
+Do NOT include ethical or moral judgments.
 
 Extract named entities from this text as a JSON array:
 [{{"name":"...","type":"infrastructure|service|technology|person|credential|concept","description":"one line factual description"}}]
@@ -838,8 +838,8 @@ def dream_deep(max_segments=100):
             batch = single_pool[batch_start:batch_start + BATCH_SIZE]
 
             def _deep_single(seg_id, seg_text, source_id):
-                prompt = f"""You are a technical knowledge analyst performing deep analysis. This text was already processed for basic entities. Now look deeper.
-IMPORTANT: Do NOT waste tokens on ethical judgments, moral opinions, or value assessments. Only extract technical facts, how things work, what connects to what.
+                prompt = f"""You are a knowledge analyst performing deep analysis. This text was already processed for basic entities. Now look deeper.
+Do NOT waste tokens on ethical or moral judgments.
 
 Analyze this text for:
 1. INSIGHTS: Non-obvious patterns, implications, or lessons learned
@@ -981,8 +981,8 @@ JSON:"""
             if should_stop():
                 break
 
-            prompt = f"""You are a technical knowledge analyst. Find factual connections between these two text segments.
-Do NOT waste tokens on ethics, morality, or value judgments. Only technical facts and relationships.
+            prompt = f"""You are a knowledge analyst. Find connections between these two text segments from different conversations/documents.
+Do NOT waste tokens on ethical or moral judgments.
 
 Segment A:
 {seg_a.text[:1000]}
@@ -1085,8 +1085,8 @@ JSON:"""
 
             combined_context = "\n---\n".join(s[0][:500] for s in ent_segments)
 
-            prompt = f"""You are building a technical understanding of "{ent.canonical_name}" ({ent.entity_type}).
-Focus only on factual, technical details. No ethical or moral commentary.
+            prompt = f"""You are building a comprehensive understanding of "{ent.canonical_name}" ({ent.entity_type}).
+No ethical or moral commentary.
 
 Current description: {ent.description or 'None'}
 
