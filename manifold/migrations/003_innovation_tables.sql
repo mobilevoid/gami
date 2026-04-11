@@ -11,8 +11,11 @@
 --
 -- To apply: psql -p 5433 -U gami -d gami -f 003_innovation_tables.sql
 -- To rollback: psql -p 5433 -U gami -d gami -f rollback_003.sql
+--
+-- NOTE: Column additions to existing tables (section 8) require postgres user
+-- Run as postgres: psql -p 5433 -U postgres -d gami -f 003_innovation_tables_alter.sql
 
-BEGIN;
+-- No transaction wrapper - allows partial success
 
 -- ===========================================================================
 -- 1. RETRIEVAL LOGS - Learning Signal Collection
@@ -159,10 +162,12 @@ CREATE TABLE IF NOT EXISTS prompt_templates (
     is_active BOOLEAN DEFAULT TRUE,
 
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-
-    CONSTRAINT uq_prompt_template UNIQUE(template_id, tenant_id, COALESCE(agent_id, ''), version)
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Unique constraint using expression index
+CREATE UNIQUE INDEX IF NOT EXISTS uq_prompt_template
+    ON prompt_templates(template_id, tenant_id, COALESCE(agent_id, ''), version);
 
 CREATE INDEX IF NOT EXISTS idx_prompt_templates_lookup
     ON prompt_templates(template_type, tenant_id, agent_id) WHERE is_active;
@@ -368,36 +373,62 @@ CREATE INDEX IF NOT EXISTS idx_subconscious_type
 
 -- ===========================================================================
 -- 8. COLUMN ADDITIONS TO EXISTING TABLES
+-- NOTE: These require table ownership. Run as postgres user if gami doesn't own tables.
 -- ===========================================================================
 
--- Attribution columns for segments
-ALTER TABLE segments ADD COLUMN IF NOT EXISTS created_by_agent_id TEXT;
-ALTER TABLE segments ADD COLUMN IF NOT EXISTS created_by_user_id TEXT;
-ALTER TABLE segments ADD COLUMN IF NOT EXISTS derived_from TEXT[];
-ALTER TABLE segments ADD COLUMN IF NOT EXISTS derivation_type TEXT;
-ALTER TABLE segments ADD COLUMN IF NOT EXISTS stability_score FLOAT DEFAULT 0.5;
-ALTER TABLE segments ADD COLUMN IF NOT EXISTS decay_score FLOAT DEFAULT 1.0;
-ALTER TABLE segments ADD COLUMN IF NOT EXISTS cluster_id TEXT;
-ALTER TABLE segments ADD COLUMN IF NOT EXISTS last_reinforced_at TIMESTAMPTZ;
+-- Attribution columns for segments (run as owner)
+DO $$
+BEGIN
+    ALTER TABLE segments ADD COLUMN IF NOT EXISTS created_by_agent_id TEXT;
+    ALTER TABLE segments ADD COLUMN IF NOT EXISTS created_by_user_id TEXT;
+    ALTER TABLE segments ADD COLUMN IF NOT EXISTS derived_from TEXT[];
+    ALTER TABLE segments ADD COLUMN IF NOT EXISTS derivation_type TEXT;
+    ALTER TABLE segments ADD COLUMN IF NOT EXISTS stability_score FLOAT DEFAULT 0.5;
+    ALTER TABLE segments ADD COLUMN IF NOT EXISTS decay_score FLOAT DEFAULT 1.0;
+    ALTER TABLE segments ADD COLUMN IF NOT EXISTS cluster_id TEXT;
+    ALTER TABLE segments ADD COLUMN IF NOT EXISTS last_reinforced_at TIMESTAMPTZ;
+EXCEPTION WHEN insufficient_privilege THEN
+    RAISE NOTICE 'segments columns require postgres user - skipping';
+END $$;
 
 -- Attribution columns for entities
-ALTER TABLE entities ADD COLUMN IF NOT EXISTS created_by_agent_id TEXT;
-ALTER TABLE entities ADD COLUMN IF NOT EXISTS created_by_user_id TEXT;
+DO $$
+BEGIN
+    ALTER TABLE entities ADD COLUMN IF NOT EXISTS created_by_agent_id TEXT;
+    ALTER TABLE entities ADD COLUMN IF NOT EXISTS created_by_user_id TEXT;
+EXCEPTION WHEN insufficient_privilege THEN
+    RAISE NOTICE 'entities columns require postgres user - skipping';
+END $$;
 
 -- Attribution columns for claims
-ALTER TABLE claims ADD COLUMN IF NOT EXISTS created_by_agent_id TEXT;
-ALTER TABLE claims ADD COLUMN IF NOT EXISTS created_by_user_id TEXT;
-ALTER TABLE claims ADD COLUMN IF NOT EXISTS derived_from TEXT[];
-ALTER TABLE claims ADD COLUMN IF NOT EXISTS derivation_type TEXT;
+DO $$
+BEGIN
+    ALTER TABLE claims ADD COLUMN IF NOT EXISTS created_by_agent_id TEXT;
+    ALTER TABLE claims ADD COLUMN IF NOT EXISTS created_by_user_id TEXT;
+    ALTER TABLE claims ADD COLUMN IF NOT EXISTS derived_from TEXT[];
+    ALTER TABLE claims ADD COLUMN IF NOT EXISTS derivation_type TEXT;
+EXCEPTION WHEN insufficient_privilege THEN
+    RAISE NOTICE 'claims columns require postgres user - skipping';
+END $$;
 
 -- Attribution columns for relations
-ALTER TABLE relations ADD COLUMN IF NOT EXISTS created_by_agent_id TEXT;
+DO $$
+BEGIN
+    ALTER TABLE relations ADD COLUMN IF NOT EXISTS created_by_agent_id TEXT;
+EXCEPTION WHEN insufficient_privilege THEN
+    RAISE NOTICE 'relations columns require postgres user - skipping';
+END $$;
 
 -- Attribution columns for assistant_memories
-ALTER TABLE assistant_memories ADD COLUMN IF NOT EXISTS created_by_agent_id TEXT;
-ALTER TABLE assistant_memories ADD COLUMN IF NOT EXISTS created_by_user_id TEXT;
-ALTER TABLE assistant_memories ADD COLUMN IF NOT EXISTS derived_from TEXT[];
-ALTER TABLE assistant_memories ADD COLUMN IF NOT EXISTS cluster_id TEXT;
+DO $$
+BEGIN
+    ALTER TABLE assistant_memories ADD COLUMN IF NOT EXISTS created_by_agent_id TEXT;
+    ALTER TABLE assistant_memories ADD COLUMN IF NOT EXISTS created_by_user_id TEXT;
+    ALTER TABLE assistant_memories ADD COLUMN IF NOT EXISTS derived_from TEXT[];
+    ALTER TABLE assistant_memories ADD COLUMN IF NOT EXISTS cluster_id TEXT;
+EXCEPTION WHEN insufficient_privilege THEN
+    RAISE NOTICE 'assistant_memories columns require postgres user - skipping';
+END $$;
 
 
 -- ===========================================================================
@@ -459,7 +490,7 @@ VALUES
 ON CONFLICT (agent_id) DO NOTHING;
 
 
-COMMIT;
+-- Migration complete (tables and seeds)
 
 -- ===========================================================================
 -- POST-MIGRATION NOTES

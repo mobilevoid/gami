@@ -5,10 +5,21 @@ import re
 from typing import Optional
 
 import httpx
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+)
 
 from api.config import settings
 
 logger = logging.getLogger("gami.llm.client")
+
+# Retry configuration for LLM calls
+LLM_RETRY_ATTEMPTS = 3
+LLM_RETRY_WAIT_MIN = 1  # seconds
+LLM_RETRY_WAIT_MAX = 10  # seconds
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +118,14 @@ def _strip_thinking(text: str) -> str:
 # Async clients
 # ---------------------------------------------------------------------------
 
+@retry(
+    stop=stop_after_attempt(LLM_RETRY_ATTEMPTS),
+    wait=wait_exponential(multiplier=1, min=LLM_RETRY_WAIT_MIN, max=LLM_RETRY_WAIT_MAX),
+    retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException)),
+    before_sleep=lambda retry_state: logger.warning(
+        f"LLM call failed, retrying ({retry_state.attempt_number}/{LLM_RETRY_ATTEMPTS})..."
+    ),
+)
 async def call_vllm(
     prompt: str,
     system_prompt: Optional[str] = None,
@@ -114,7 +133,10 @@ async def call_vllm(
     temperature: float = 0.1,
     model: Optional[str] = None,
 ) -> str:
-    """Call vLLM (OpenAI-compatible) and return the assistant content."""
+    """Call vLLM (OpenAI-compatible) and return the assistant content.
+
+    Includes automatic retry with exponential backoff for transient failures.
+    """
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -172,6 +194,13 @@ async def call_ollama(
 # Sync clients (for Celery workers)
 # ---------------------------------------------------------------------------
 
+@retry(
+    stop=stop_after_attempt(LLM_RETRY_ATTEMPTS),
+    wait=wait_exponential(multiplier=1, min=LLM_RETRY_WAIT_MIN, max=LLM_RETRY_WAIT_MAX),
+    before_sleep=lambda retry_state: logger.warning(
+        f"LLM call failed, retrying ({retry_state.attempt_number}/{LLM_RETRY_ATTEMPTS})..."
+    ),
+)
 def call_vllm_sync(
     prompt: str,
     system_prompt: Optional[str] = None,
@@ -179,7 +208,10 @@ def call_vllm_sync(
     temperature: float = 0.1,
     model: Optional[str] = None,
 ) -> str:
-    """Sync version of call_vllm for Celery workers."""
+    """Sync version of call_vllm for Celery workers.
+
+    Includes automatic retry with exponential backoff for transient failures.
+    """
     import requests
 
     messages = []

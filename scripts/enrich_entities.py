@@ -22,6 +22,11 @@ VLLM_URL = settings.VLLM_URL
 
 def call_vllm(prompt, max_tokens=1500):
     try:
+        from api.llm.vllm_monitor import emit as _emit
+    except Exception:
+        _emit = None
+    t0 = time.time()
+    try:
         r = requests.post(f"{VLLM_URL}/chat/completions", json={
             "model": "qwen35-27b-unredacted",
             "messages": [{"role": "user", "content": prompt}],
@@ -29,16 +34,13 @@ def call_vllm(prompt, max_tokens=1500):
         }, timeout=120)
         if r.status_code == 200:
             content = r.json()["choices"][0]["message"]["content"]
-            # Strip XML thinking blocks
+            tokens = r.json().get("usage", {}).get("completion_tokens", 0)
             content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
-            # Aggressively strip thinking: remove everything that looks like reasoning
-            # Keep only plain prose (no numbered lists, no bold markers, no "Analyze")
             lines = content.split('\n')
             clean_lines = []
             in_thinking = False
             for line in lines:
                 stripped = line.strip()
-                # Skip thinking markers
                 if re.match(r'^(Thinking Process|Analysis|Step \d|\d+\.\s+\*\*|\*\*\w)', stripped):
                     in_thinking = True
                     continue
@@ -49,12 +51,15 @@ def call_vllm(prompt, max_tokens=1500):
                     clean_lines.append(stripped)
 
             result = ' '.join(clean_lines).strip()
-            # Remove leftover markdown
             result = re.sub(r'\*\*([^*]+)\*\*', r'\1', result)
             result = re.sub(r'\*([^*]+)\*', r'\1', result)
+            if _emit:
+                _emit("enrich", prompt, result or content, (time.time()-t0)*1000, "ok", tokens)
             return result if result else content
     except Exception as e:
         log.warning(f"vLLM call failed: {e}")
+        if _emit:
+            _emit("enrich", prompt, "", (time.time()-t0)*1000, "error", 0, str(e))
     return None
 
 

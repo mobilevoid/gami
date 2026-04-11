@@ -22,6 +22,7 @@ from api.services.memory_service import (
     confirm,
     get_context,
 )
+from api.services.learning_service import get_retrieval_logger, OUTCOME_SIGNALS
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,8 @@ class RecallRequest(BaseModel):
     mode: Optional[str] = Field(default=None, description="Override query mode")
     include_citations: bool = Field(default=True)
     citation_level: str = Field(default="brief", pattern="^(brief|full|drill_down)$")
+    session_id: Optional[str] = Field(default=None, description="Session ID for learning")
+    agent_id: Optional[str] = Field(default=None, description="Agent ID for attribution")
 
 
 class RecallResponse(BaseModel):
@@ -147,6 +150,20 @@ class UpdateMemoryRequest(BaseModel):
 
 class ConfirmRequest(BaseModel):
     memory_id: str
+
+
+class FeedbackRequest(BaseModel):
+    """Request to record retrieval outcome for learning."""
+    session_id: str = Field(..., description="Session ID from recall request")
+    feedback_type: str = Field(
+        ...,
+        description="Outcome type: confirmed, used, continued, ignored, corrected, wrong",
+        pattern="^(confirmed|used|continued|ignored|corrected|wrong)$"
+    )
+    correction_text: Optional[str] = Field(
+        default=None,
+        description="Corrected information if feedback_type is 'corrected'"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +257,8 @@ async def recall_memory(req: RecallRequest):
             mode=req.mode,
             include_citations=req.include_citations,
             citation_level=cit_level,
+            session_id=req.session_id,
+            agent_id=req.agent_id,
         )
         return RecallResponse(
             query=result.query,
@@ -393,3 +412,45 @@ async def get_session_context(session_id: str, tenant_id: str = "claude-opus"):
     except Exception as exc:
         logger.error("Get context failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Context failed: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Feedback endpoint for learning
+# ---------------------------------------------------------------------------
+
+@router.post("/feedback")
+async def record_feedback(req: FeedbackRequest):
+    """Record user feedback on retrieval for learning.
+
+    Feedback types and their signals:
+    - confirmed: User explicitly confirmed information was correct (+1.0)
+    - used: User used the retrieved information (+0.8)
+    - continued: User continued conversation without issue (+0.3)
+    - ignored: User ignored the retrieved results (-0.2)
+    - corrected: User provided correction (-0.8)
+    - wrong: User indicated information was wrong (-1.0)
+    """
+    try:
+        retrieval_logger = get_retrieval_logger()
+
+        # Get the signal value for this feedback type
+        signal = OUTCOME_SIGNALS.get(req.feedback_type, 0.0)
+
+        # Record the outcome in the database
+        async with AsyncSessionLocal() as db:
+            success = await retrieval_logger.record_outcome(
+                db=db,
+                session_id=req.session_id,
+                outcome_type=req.feedback_type,
+                correction_text=req.correction_text,
+            )
+
+        return {
+            "status": "recorded" if success else "no_matching_log",
+            "session_id": req.session_id,
+            "feedback_type": req.feedback_type,
+            "signal_value": signal,
+        }
+    except Exception as exc:
+        logger.error("Feedback recording failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Feedback failed: {exc}")

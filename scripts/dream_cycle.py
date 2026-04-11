@@ -75,6 +75,11 @@ def call_vllm(prompt, max_tokens=1500):
     if should_stop():
         return None
     try:
+        from api.llm.vllm_monitor import emit as _emit
+    except Exception:
+        _emit = None
+    t0 = time.time()
+    try:
         r = requests.post(f"{settings.VLLM_URL}/chat/completions", json={
             "model": "qwen35-27b-unredacted",
             "messages": [{"role": "user", "content": prompt}],
@@ -84,11 +89,15 @@ def call_vllm(prompt, max_tokens=1500):
         }, timeout=120)
         if r.status_code == 200:
             content = r.json()["choices"][0]["message"]["content"]
-            # Strip thinking blocks (XML-style)
+            tokens = r.json().get("usage", {}).get("completion_tokens", 0)
             content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
+            if _emit:
+                _emit("dream", prompt, content, (time.time()-t0)*1000, "ok", tokens)
             return content
     except Exception as e:
         log.warning(f"vLLM call failed: {e}")
+        if _emit:
+            _emit("dream", prompt, "", (time.time()-t0)*1000, "error", 0, str(e))
     return None
 
 def gen_id(prefix, name):
@@ -1198,6 +1207,204 @@ JSON:"""
 
 
 # ============================================================
+# INNOVATION EXTENSION PHASES
+# ============================================================
+
+def dream_learning():
+    """Phase: Learn from retrieval feedback and adjust segment importance."""
+    log.info("=== Dream Phase: Retrieval Learning ===")
+
+    try:
+        from api.services.learning_service import LearningAnalyzer
+        from manifold.config_v2 import get_config
+        import asyncio
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+        config = get_config()
+        if not config.learning.enabled:
+            log.info("  Learning disabled in config")
+            return {"skipped": True}
+
+        # Create async session for learning analyzer
+        async_url = settings.DATABASE_URL_SYNC.replace("postgresql://", "postgresql+asyncpg://")
+        async_engine = create_async_engine(async_url)
+        async_session = async_sessionmaker(async_engine, class_=AsyncSession)
+
+        analyzer = LearningAnalyzer(config)
+
+        async def run_learning():
+            async with async_session() as db:
+                stats = await analyzer.process_learning_signals(db, max_logs=1000, tenant_id=TENANT)
+                return stats
+
+        stats = asyncio.run(run_learning())
+
+        result = {
+            "logs_processed": stats.logs_processed,
+            "segments_updated": stats.segments_updated,
+            "positive_signals": stats.positive_signals,
+            "negative_signals": stats.negative_signals,
+        }
+        log.info(f"  Learning complete: {json.dumps(result)}")
+        return result
+
+    except Exception as e:
+        log.error(f"  Learning phase failed: {e}")
+        return {"error": str(e)}
+
+
+def dream_causal():
+    """Phase: Extract causal relationships from recent segments."""
+    log.info("=== Dream Phase: Causal Extraction ===")
+
+    try:
+        from api.services.causal_extractor import CausalExtractor, ExtractionContext, save_causal_relations
+        from manifold.config_v2 import get_config
+        import asyncio
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+        config = get_config()
+        if not config.causal.enabled:
+            log.info("  Causal extraction disabled in config")
+            return {"skipped": True}
+
+        extractor = CausalExtractor(config)
+
+        # Get recent unprocessed segments
+        with engine.connect() as conn:
+            segments = conn.execute(text("""
+                SELECT s.segment_id, s.raw_text, s.source_id, src.source_type
+                FROM segments s
+                LEFT JOIN sources src ON s.source_id = src.source_id
+                WHERE s.owner_tenant_id = :tid
+                AND s.created_at > NOW() - INTERVAL '7 days'
+                AND NOT EXISTS (
+                    SELECT 1 FROM causal_relations cr
+                    WHERE cr.source_segment_id = s.segment_id
+                )
+                LIMIT 200
+            """), {"tid": TENANT}).fetchall()
+
+        if not segments:
+            log.info("  No segments to process for causal extraction")
+            return {"processed": 0}
+
+        async_url = settings.DATABASE_URL_SYNC.replace("postgresql://", "postgresql+asyncpg://")
+        async_engine = create_async_engine(async_url)
+        async_session = async_sessionmaker(async_engine, class_=AsyncSession)
+
+        total_relations = 0
+
+        async def extract_and_save():
+            nonlocal total_relations
+            async with async_session() as db:
+                for seg in segments:
+                    if should_stop():
+                        break
+
+                    context = ExtractionContext(
+                        segment_id=seg.segment_id,
+                        tenant_id=TENANT,
+                        source_authority=0.7 if seg.source_type == "documentation" else 0.5,
+                    )
+
+                    try:
+                        relations = await extractor.extract(seg.raw_text or "", context)
+                        if relations:
+                            saved = await save_causal_relations(db, relations, TENANT)
+                            total_relations += saved
+                    except Exception as e:
+                        log.debug(f"  Causal extraction failed for {seg.segment_id}: {e}")
+
+        asyncio.run(extract_and_save())
+
+        result = {"segments_processed": len(segments), "relations_extracted": total_relations}
+        log.info(f"  Causal extraction complete: {json.dumps(result)}")
+        return result
+
+    except Exception as e:
+        log.error(f"  Causal phase failed: {e}")
+        return {"error": str(e)}
+
+
+def dream_consolidate():
+    """Phase: Cluster similar memories and generate abstractions."""
+    log.info("=== Dream Phase: Memory Consolidation ===")
+
+    try:
+        from api.services.consolidation_service import ConsolidationService
+        from manifold.config_v2 import get_config
+        import asyncio
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+        config = get_config()
+        if not config.consolidation.enabled:
+            log.info("  Consolidation disabled in config")
+            return {"skipped": True}
+
+        service = ConsolidationService(config)
+
+        async_url = settings.DATABASE_URL_SYNC.replace("postgresql://", "postgresql+asyncpg://")
+        async_engine = create_async_engine(async_url)
+        async_session = async_sessionmaker(async_engine, class_=AsyncSession)
+
+        async def run_consolidation():
+            async with async_session() as db:
+                stats = await service.run_consolidation(
+                    db, tenant_id=TENANT, max_memories=500, max_clusters=50
+                )
+                return stats
+
+        stats = asyncio.run(run_consolidation())
+
+        result = {
+            "memories_processed": stats.memories_processed,
+            "clusters_created": stats.clusters_created,
+            "abstractions_generated": stats.abstractions_generated,
+            "segments_decayed": stats.segments_decayed,
+            "segments_archived": stats.segments_archived,
+            "inferences_generated": stats.inferences_generated,
+        }
+        log.info(f"  Consolidation complete: {json.dumps(result)}")
+        return result
+
+    except Exception as e:
+        log.error(f"  Consolidation phase failed: {e}")
+        return {"error": str(e)}
+
+
+def dream_trust():
+    """Phase: Update agent trust scores based on claim verification."""
+    log.info("=== Dream Phase: Agent Trust Scoring ===")
+
+    try:
+        from api.services.agent_service import AgentTrustService
+        import asyncio
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+        async_url = settings.DATABASE_URL_SYNC.replace("postgresql://", "postgresql+asyncpg://")
+        async_engine = create_async_engine(async_url)
+        async_session = async_sessionmaker(async_engine, class_=AsyncSession)
+
+        service = AgentTrustService()
+
+        async def update_trust():
+            async with async_session() as db:
+                updated = await service.update_all_agents_trust(db)
+                return updated
+
+        updated = asyncio.run(update_trust())
+
+        result = {"agents_updated": updated}
+        log.info(f"  Trust scoring complete: {json.dumps(result)}")
+        return result
+
+    except Exception as e:
+        log.error(f"  Trust phase failed: {e}")
+        return {"error": str(e)}
+
+
+# ============================================================
 # Main Dream Cycle
 # ============================================================
 def dream(duration=None, phase=None, check_idle=False):
@@ -1229,6 +1436,11 @@ def dream(duration=None, phase=None, check_idle=False):
         ("embed", dream_embed),
         ("deep_dream", dream_deep),
         ("auto_approve", dream_auto_approve),
+        # Innovation extension phases
+        ("learning", dream_learning),
+        ("causal", dream_causal),
+        ("consolidate", dream_consolidate),
+        ("trust", dream_trust),
     ]
 
     cycle = 0
@@ -1276,7 +1488,11 @@ def dream(duration=None, phase=None, check_idle=False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GAMI Dream Cycle")
-    parser.add_argument("--phase", choices=["extract", "summarize", "resolve", "reconcile", "verify_memories", "relate", "score", "embed", "deep_dream", "auto_approve"])
+    parser.add_argument("--phase", choices=[
+        "extract", "summarize", "resolve", "reconcile", "verify_memories",
+        "relate", "score", "embed", "deep_dream", "auto_approve",
+        "learning", "causal", "consolidate", "trust"
+    ])
     parser.add_argument("--duration", type=int, help="Max duration in seconds")
     parser.add_argument("--check-idle", action="store_true", help="Only run if vLLM is idle")
     args = parser.parse_args()

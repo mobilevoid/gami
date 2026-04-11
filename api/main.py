@@ -117,8 +117,8 @@ async def health():
 
 @app.get("/health/deep")
 async def health_deep():
-    """Deep health check — verifies DB and Redis."""
-    checks = {"db": "unknown", "redis": "unknown"}
+    """Deep health check — verifies DB, Redis, and innovation components."""
+    checks = {"db": "unknown", "redis": "unknown", "innovation_tables": "unknown", "config": "unknown"}
 
     # Check DB
     try:
@@ -146,6 +146,32 @@ async def health_deep():
     except Exception as exc:
         checks["redis"] = f"error: {exc}"
 
+    # Check innovation tables exist
+    try:
+        from api.services.db import async_engine
+        from sqlalchemy import text as sql_text
+
+        async with async_engine.connect() as conn:
+            result = await conn.execute(sql_text("""
+                SELECT COUNT(*) FROM information_schema.tables
+                WHERE table_schema = 'public'
+                AND table_name IN ('retrieval_logs', 'agent_configs', 'causal_relations',
+                                   'memory_clusters', 'prompt_templates', 'sessions')
+            """))
+            count = result.scalar()
+            checks["innovation_tables"] = "ok" if count >= 6 else f"missing ({count}/6)"
+    except Exception as exc:
+        checks["innovation_tables"] = f"error: {exc}"
+
+    # Check config system
+    try:
+        from manifold.config_v2 import get_config
+        config = get_config()
+        errors = config.validate()
+        checks["config"] = "ok" if not errors else f"invalid: {errors}"
+    except Exception as exc:
+        checks["config"] = f"error: {exc}"
+
     overall = "ok" if all(v == "ok" for v in checks.values()) else "degraded"
     return {
         "status": overall,
@@ -165,12 +191,14 @@ from api.routers.auth import router as auth_router
 from api.routers.memory import router as memory_router
 from api.routers.graph import router as graph_router
 from api.routers.admin import router as admin_router
+from api.routers.agents import router as agents_router
 
 app.include_router(ingest_router, prefix="/api/v1/ingest", tags=["ingest"])
 app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
 app.include_router(memory_router, prefix="/api/v1/memory", tags=["memory"])
 app.include_router(graph_router, prefix="/api/v1/graph", tags=["graph"])
 app.include_router(admin_router, prefix="/api/v1/admin", tags=["admin"])
+app.include_router(agents_router, prefix="/api/v1", tags=["agents"])
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +240,12 @@ async def prometheus_metrics():
                 ("events", "gami_events_total"),
                 ("sources", "gami_sources_total"),
                 ("assistant_memories", "gami_memories_total"),
+                # Innovation tables
+                ("retrieval_logs", "gami_retrieval_logs_total"),
+                ("agent_configs", "gami_agent_configs_total"),
+                ("causal_relations", "gami_causal_relations_total"),
+                ("memory_clusters", "gami_memory_clusters_total"),
+                ("sessions", "gami_sessions_total"),
             ]:
                 try:
                     row = await db.execute(_sql_text(f"SELECT COUNT(*) FROM {tbl}"))
@@ -286,6 +320,70 @@ async def prometheus_metrics():
             try:
                 row = await db.execute(_sql_text("SELECT COUNT(*) FROM tenants"))
                 _g("gami_tenants_total", row.scalar() or 0, "Total tenants")
+            except Exception:
+                pass
+
+            # Innovation metrics: Learning
+            try:
+                # Retrieval logs with feedback
+                row = await db.execute(_sql_text(
+                    "SELECT COUNT(*) FROM retrieval_logs WHERE outcome_type IS NOT NULL"
+                ))
+                _g("gami_learning_feedback_total", row.scalar() or 0,
+                   "Retrieval logs with feedback")
+
+                # Positive vs negative signals
+                rows = await db.execute(_sql_text("""
+                    SELECT
+                        CASE WHEN outcome_signal > 0 THEN 'positive'
+                             WHEN outcome_signal < 0 THEN 'negative'
+                             ELSE 'neutral' END as signal_type,
+                        COUNT(*)
+                    FROM retrieval_logs
+                    WHERE outcome_signal IS NOT NULL
+                    GROUP BY 1
+                """))
+                for r in rows.fetchall():
+                    _g("gami_learning_signals", r[1], "", f'type="{r[0]}"')
+            except Exception:
+                pass
+
+            # Innovation metrics: Causal relations
+            try:
+                rows = await db.execute(_sql_text("""
+                    SELECT causal_type, COUNT(*) FROM causal_relations
+                    WHERE status = 'active' GROUP BY causal_type
+                """))
+                for r in rows.fetchall():
+                    _g("gami_causal_by_type", r[1], "", f'type="{r[0]}"')
+            except Exception:
+                pass
+
+            # Innovation metrics: Memory clusters
+            try:
+                row = await db.execute(_sql_text(
+                    "SELECT COUNT(*), AVG(stability_score), AVG(current_decay) "
+                    "FROM memory_clusters WHERE status = 'active'"
+                ))
+                r = row.fetchone()
+                if r:
+                    _g("gami_clusters_active", r[0] or 0, "Active memory clusters")
+                    _g("gami_clusters_avg_stability", f"{r[1] or 0:.3f}",
+                       "Average cluster stability")
+                    _g("gami_clusters_avg_decay", f"{r[2] or 1:.3f}",
+                       "Average cluster decay")
+            except Exception:
+                pass
+
+            # Innovation metrics: Agent trust
+            try:
+                rows = await db.execute(_sql_text("""
+                    SELECT agent_id, accuracy_score, total_claims
+                    FROM agent_configs WHERE status = 'active'
+                """))
+                for r in rows.fetchall():
+                    _g("gami_agent_accuracy", f"{r[1]:.3f}", "", f'agent="{r[0]}"')
+                    _g("gami_agent_claims", r[2], "", f'agent="{r[0]}"')
             except Exception:
                 pass
 

@@ -9,11 +9,17 @@ The evidence manifold is a 5-dimensional composite score:
 
 These combine into a single evidence score used for verification
 and fact-checking queries.
+
+All weights are configurable via ManifoldConfigV2.scoring.
 """
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
 import math
+import re
 from datetime import datetime, timedelta
+
+if TYPE_CHECKING:
+    from ..config_v2 import ScoringWeights
 
 
 @dataclass
@@ -27,23 +33,35 @@ class EvidenceFactors:
     total_mentions: int = 1
 
 
-def compute_evidence_score(factors: EvidenceFactors) -> float:
+def compute_evidence_score(
+    factors: EvidenceFactors,
+    weights: Optional["ScoringWeights"] = None,
+) -> float:
     """Compute composite evidence score.
 
     Args:
         factors: The 5 evidence factors.
+        weights: Optional scoring weights from config. If None, uses defaults.
 
     Returns:
         Evidence score in [0, 1].
     """
+    # Get weights from config or use defaults
+    if weights is None:
+        from ..config import get_scoring_weights
+        weights = get_scoring_weights()
+
     # 1. Source authority (direct)
     authority = _clamp(factors.source_authority)
 
     # 2. Corroboration (log-scaled, saturates around 5 confirmations)
     corroboration = min(1.0, math.log1p(factors.corroboration_count) / 1.8)
 
-    # 3. Recency (exponential decay, half-life 60 days)
-    recency = math.exp(-factors.days_since_observed / 86.6)  # ln(2)/60 ≈ 0.0116
+    # 3. Recency (exponential decay)
+    # halflife_days determines decay rate: ln(2) / halflife
+    halflife = weights.recency_halflife_days
+    decay_constant = halflife / math.log(2)  # Convert to exponential decay constant
+    recency = math.exp(-factors.days_since_observed / decay_constant)
 
     # 4. Specificity (direct)
     specificity = _clamp(factors.specificity)
@@ -55,20 +73,17 @@ def compute_evidence_score(factors: EvidenceFactors) -> float:
         contradiction_ratio = 0.0
     non_contradiction = 1.0 - min(1.0, contradiction_ratio)
 
-    # Weighted combination
-    # Authority and corroboration are most important for verification
-    # Contradictions have multiplicative effect - high contradiction rate
-    # should significantly reduce score regardless of other factors
+    # Weighted combination using configurable weights
     base_score = (
-        0.25 * authority
-        + 0.30 * corroboration
-        + 0.15 * recency
-        + 0.10 * specificity
-        + 0.20 * non_contradiction
+        weights.evidence_authority * authority
+        + weights.evidence_corroboration * corroboration
+        + weights.evidence_recency * recency
+        + weights.evidence_specificity * specificity
+        + weights.evidence_non_contradiction * non_contradiction
     )
 
     # Apply contradiction penalty as multiplier (harsh for high contradiction rates)
-    contradiction_multiplier = non_contradiction ** 1.5
+    contradiction_multiplier = non_contradiction ** weights.evidence_contradiction_exponent
     score = base_score * contradiction_multiplier
 
     return _clamp(score)
@@ -84,6 +99,7 @@ def compute_source_authority(
     author_confidence: float = 0.5,
     citation_count: int = 0,
     is_primary: bool = False,
+    weights: Optional["ScoringWeights"] = None,
 ) -> float:
     """Compute source authority score.
 
@@ -92,28 +108,23 @@ def compute_source_authority(
         author_confidence: Confidence in the author/speaker
         citation_count: How often this source is cited
         is_primary: Whether this is a primary source vs. secondary
+        weights: Optional scoring weights from config.
 
     Returns:
         Authority score in [0, 1].
     """
-    # Base authority by source type
-    type_authority = {
-        "documentation": 0.9,
-        "configuration": 0.85,
-        "code_comment": 0.7,
-        "assistant_response": 0.6,
-        "conversation": 0.5,
-        "user_message": 0.4,
-        "log": 0.3,
-        "unknown": 0.3,
-    }
+    # Get weights from config or use defaults
+    if weights is None:
+        from ..config import get_scoring_weights
+        weights = get_scoring_weights()
 
-    base = type_authority.get(source_type, 0.5)
+    # Get base authority from config weights
+    base = weights.get_authority(source_type)
 
-    # Adjust for author confidence
+    # Adjust for author confidence (0.8 to 1.0 multiplier)
     author_factor = 0.8 + 0.2 * _clamp(author_confidence)
 
-    # Adjust for citation count (log-scaled)
+    # Adjust for citation count (log-scaled, up to 10% boost)
     citation_factor = 1.0 + 0.1 * min(1.0, math.log1p(citation_count) / 3.0)
 
     # Primary sources get a boost
@@ -124,7 +135,16 @@ def compute_source_authority(
     return _clamp(authority)
 
 
-def compute_specificity(text: str) -> float:
+def compute_specificity(
+    text: str,
+    base_score: float = 0.3,
+    number_boost: float = 0.15,
+    name_boost: float = 0.1,
+    technical_boost: float = 0.1,
+    date_boost: float = 0.15,
+    ip_boost: float = 0.1,
+    vague_penalty: float = 0.05,
+) -> float:
     """Compute specificity score for a claim or statement.
 
     More specific claims (with numbers, names, concrete details)
@@ -132,34 +152,44 @@ def compute_specificity(text: str) -> float:
 
     Args:
         text: The claim or statement text.
+        base_score: Starting score before adjustments.
+        number_boost: Boost for presence of numbers.
+        name_boost: Boost for presence of proper names.
+        technical_boost: Boost for technical terms.
+        date_boost: Boost for dates/times.
+        ip_boost: Boost for IPs/ports/paths.
+        vague_penalty: Penalty per vague word.
 
     Returns:
         Specificity score in [0, 1].
     """
-    score = 0.3  # Base score
-
-    # Check for specific indicators
-    import re
+    score = base_score
 
     # Numbers and quantities
     if re.search(r'\d+', text):
-        score += 0.15
+        score += number_boost
 
     # Specific names (capitalized words that aren't sentence starts)
     if re.search(r'(?<!\. )[A-Z][a-z]+', text):
-        score += 0.1
+        score += name_boost
 
     # Technical terms (mixed case, underscores, dots)
     if re.search(r'[a-z]+_[a-z]+|[a-z]+\.[a-z]+', text):
-        score += 0.1
+        score += technical_boost
 
     # Dates and times
-    if re.search(r'\d{1,2}[:/]\d{2}|\d{4}-\d{2}-\d{2}|January|February|March|April|May|June|July|August|September|October|November|December', text, re.I):
-        score += 0.15
+    if re.search(
+        r'\d{1,2}[:/]\d{2}|\d{4}-\d{2}-\d{2}|'
+        r'January|February|March|April|May|June|'
+        r'July|August|September|October|November|December',
+        text,
+        re.I
+    ):
+        score += date_boost
 
     # IP addresses, ports, paths
     if re.search(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|:\d+|/\w+/', text):
-        score += 0.1
+        score += ip_boost
 
     # Penalize vague language
     vague_patterns = [
@@ -169,7 +199,7 @@ def compute_specificity(text: str) -> float:
     ]
     for pattern in vague_patterns:
         if re.search(pattern, text, re.I):
-            score -= 0.05
+            score -= vague_penalty
 
     return _clamp(score)
 
@@ -189,17 +219,18 @@ def find_corroborating_evidence(
     Returns:
         List of corroborating segments with scores.
     """
-    # This would use embedding similarity in production
-    # Placeholder implementation
     corroborating = []
 
-    for segment in candidate_segments:
-        # In production: compute semantic similarity
-        # Here: simple keyword overlap as placeholder
-        claim_words = set(claim_text.lower().split())
-        segment_words = set(segment.get("text", "").lower().split())
+    claim_words = set(claim_text.lower().split())
+    if not claim_words:
+        return corroborating
 
-        if claim_words and segment_words:
+    for segment in candidate_segments:
+        segment_text = segment.get("text", "")
+        segment_words = set(segment_text.lower().split())
+
+        if segment_words:
+            # Jaccard similarity
             overlap = len(claim_words & segment_words) / len(claim_words | segment_words)
             if overlap >= similarity_threshold:
                 corroborating.append({
@@ -213,18 +244,18 @@ def find_corroborating_evidence(
 def find_contradicting_evidence(
     claim_text: str,
     candidate_segments: List[dict],
+    topic_overlap_threshold: float = 0.3,
 ) -> List[dict]:
     """Find segments that contradict a claim.
 
     Args:
         claim_text: The claim to check.
         candidate_segments: Potential contradicting segments.
+        topic_overlap_threshold: Minimum topic overlap to consider.
 
     Returns:
         List of contradicting segments.
     """
-    # This would use LLM-based contradiction detection in production
-    # Placeholder: look for negation patterns
     contradicting = []
 
     negation_patterns = [
@@ -233,24 +264,26 @@ def find_contradicting_evidence(
         "incorrect", "false", "wrong", "outdated",
     ]
 
-    claim_lower = claim_text.lower()
+    claim_words = set(claim_text.lower().split())
+    if not claim_words:
+        return contradicting
 
     for segment in candidate_segments:
         segment_text = segment.get("text", "").lower()
+        segment_words = set(segment_text.split())
 
         # Check if segment discusses same topic but with negation
-        # This is a simplified heuristic
         for neg in negation_patterns:
             if neg in segment_text:
                 # Check for topic overlap
-                claim_words = set(claim_lower.split())
-                segment_words = set(segment_text.split())
-                overlap = len(claim_words & segment_words) / max(len(claim_words), 1)
+                overlap = len(claim_words & segment_words) / len(claim_words)
 
-                if overlap > 0.3:
+                if overlap > topic_overlap_threshold:
                     contradicting.append({
                         **segment,
                         "contradiction_type": "negation",
+                        "negation_word": neg,
+                        "topic_overlap": overlap,
                     })
                     break
 
@@ -277,10 +310,26 @@ class EvidenceVector:
         ]
 
     @classmethod
-    def from_factors(cls, factors: EvidenceFactors) -> "EvidenceVector":
-        """Create evidence vector from factors."""
+    def from_factors(
+        cls,
+        factors: EvidenceFactors,
+        weights: Optional["ScoringWeights"] = None,
+    ) -> "EvidenceVector":
+        """Create evidence vector from factors.
+
+        Args:
+            factors: Input evidence factors.
+            weights: Optional scoring weights from config.
+        """
+        if weights is None:
+            from ..config import get_scoring_weights
+            weights = get_scoring_weights()
+
         corroboration = min(1.0, math.log1p(factors.corroboration_count) / 1.8)
-        recency = math.exp(-factors.days_since_observed / 86.6)
+
+        halflife = weights.recency_halflife_days
+        decay_constant = halflife / math.log(2)
+        recency = math.exp(-factors.days_since_observed / decay_constant)
 
         if factors.total_mentions > 0:
             contradiction_ratio = factors.contradiction_count / factors.total_mentions
@@ -294,3 +343,30 @@ class EvidenceVector:
             specificity=_clamp(factors.specificity),
             non_contradiction=1.0 - min(1.0, contradiction_ratio),
         )
+
+    def compute_score(self, weights: Optional["ScoringWeights"] = None) -> float:
+        """Compute weighted score from vector components.
+
+        Args:
+            weights: Optional scoring weights from config.
+
+        Returns:
+            Evidence score in [0, 1].
+        """
+        if weights is None:
+            from ..config import get_scoring_weights
+            weights = get_scoring_weights()
+
+        base_score = (
+            weights.evidence_authority * self.source_authority
+            + weights.evidence_corroboration * self.corroboration
+            + weights.evidence_recency * self.recency
+            + weights.evidence_specificity * self.specificity
+            + weights.evidence_non_contradiction * self.non_contradiction
+        )
+
+        # Apply contradiction penalty
+        contradiction_multiplier = self.non_contradiction ** weights.evidence_contradiction_exponent
+        score = base_score * contradiction_multiplier
+
+        return _clamp(score)

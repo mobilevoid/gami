@@ -368,15 +368,17 @@ def main():
 
     logger.info("Starting ingestion with %d workers...", args.workers)
 
-    # Pre-initialize OCR model before any forking (required for GPU CUDA)
-    if args.file_type == "pdf" and args.workers <= 1:
+    # Log OCR availability
+    if args.file_type == "pdf":
         try:
-            from parsers.pdf_parser import init_ocr, HAS_DOCTR, HAS_DOCTR_GPU
-            if HAS_DOCTR:
+            from parsers.pdf_parser import HAS_TESSERACT, HAS_DOCTR, HAS_DOCTR_GPU
+            logger.info(f"OCR: tesseract={HAS_TESSERACT}, doctr={HAS_DOCTR} (GPU={HAS_DOCTR_GPU})")
+            if not HAS_TESSERACT and HAS_DOCTR and args.workers <= 1:
+                from parsers.pdf_parser import init_ocr
                 model = init_ocr()
-                logger.info(f"OCR model pre-loaded (GPU: {HAS_DOCTR_GPU}, model: {'OK' if model else 'FAILED'})")
+                logger.info(f"Doctr OCR pre-loaded: {'OK' if model else 'FAILED'}")
         except Exception as e:
-            logger.warning(f"OCR pre-init failed: {e}")
+            logger.warning(f"OCR init: {e}")
 
     use_executor = args.workers > 1
 

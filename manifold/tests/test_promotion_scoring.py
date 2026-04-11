@@ -12,8 +12,8 @@ from manifold.scoring.promotion import (
     PromotionFactors,
     should_promote,
     should_demote,
-    PROMOTION_THRESHOLD,
-    DEMOTION_THRESHOLD,
+    get_promotion_threshold,
+    get_demotion_threshold,
 )
 
 
@@ -132,9 +132,11 @@ class TestPromotionThresholds:
 
     def test_threshold_ordering(self):
         """Promotion threshold should be higher than demotion threshold."""
-        assert PROMOTION_THRESHOLD > DEMOTION_THRESHOLD
+        promotion_threshold = get_promotion_threshold()
+        demotion_threshold = get_demotion_threshold()
+        assert promotion_threshold > demotion_threshold
         # Should have hysteresis gap to prevent oscillation
-        assert PROMOTION_THRESHOLD - DEMOTION_THRESHOLD >= 0.1
+        assert promotion_threshold - demotion_threshold >= 0.1
 
 
 class TestFactorWeighting:

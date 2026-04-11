@@ -33,8 +33,20 @@ from api.services.query_classifier import (
 )
 from api.services.db import AsyncSessionLocal
 from api.services.hot_cache import search_hot_cache
+from api.services.learning_service import RetrievalLogger
 
 logger = logging.getLogger("gami.services.retrieval")
+
+# Global retrieval logger instance
+_retrieval_logger: Optional[RetrievalLogger] = None
+
+
+def _get_retrieval_logger() -> RetrievalLogger:
+    """Get or create the retrieval logger singleton."""
+    global _retrieval_logger
+    if _retrieval_logger is None:
+        _retrieval_logger = RetrievalLogger()
+    return _retrieval_logger
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +223,8 @@ async def recall(
     mode: Optional[str] = None,
     include_citations: bool = True,
     citation_level: CitationLevel = CitationLevel.BRIEF,
+    session_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
 ) -> RecallResult:
     """Full retrieval pipeline: classify, search, score, budget, cite.
 
@@ -666,8 +680,30 @@ async def recall(
 
     # Fire-and-forget access tracking for returned segments
     returned_ids = [ev.item_id for ev in evidence_results]
+    returned_scores = [ev.score for ev in evidence_results]
     if returned_ids:
         asyncio.get_event_loop().create_task(_track_access(returned_ids))
+
+    # Log retrieval for learning (fire-and-forget)
+    if session_id:
+        async def _log_retrieval_task():
+            try:
+                async with AsyncSessionLocal() as log_db:
+                    retrieval_logger = _get_retrieval_logger()
+                    await retrieval_logger.log_retrieval(
+                        db=log_db,
+                        session_id=session_id,
+                        query_text=query,
+                        query_mode=classification.mode.value,
+                        segments_returned=returned_ids,
+                        scores_returned=returned_scores,
+                        tenant_id=tenant_id,
+                        agent_id=agent_id,
+                    )
+            except Exception as log_err:
+                logger.warning(f"Failed to log retrieval for learning: {log_err}")
+
+        asyncio.get_event_loop().create_task(_log_retrieval_task())
 
     return RecallResult(
         query=query,

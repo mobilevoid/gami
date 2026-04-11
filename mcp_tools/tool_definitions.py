@@ -536,6 +536,33 @@ TOOL_DEFINITIONS = {
             "required": ["item_type", "correct_value"],
         },
     },
+    "memory_feedback": {
+        "name": "memory_feedback",
+        "description": (
+            "Record feedback on retrieval quality for learning. Call this after "
+            "using recalled memories to help GAMI learn which retrievals were useful. "
+            "This improves future recall quality through machine learning."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "Session ID from the recall request",
+                },
+                "feedback_type": {
+                    "type": "string",
+                    "description": "Type of feedback",
+                    "enum": ["confirmed", "used", "continued", "ignored", "corrected", "wrong"],
+                },
+                "correction_text": {
+                    "type": "string",
+                    "description": "Correction text if feedback_type is 'corrected'",
+                },
+            },
+            "required": ["session_id", "feedback_type"],
+        },
+    },
 }
 
 DREAM_TOOLS = [

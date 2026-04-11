@@ -49,6 +49,7 @@ def extract_entities(
     source_id: str,
     segment_id: Optional[str],
     tenant_id: str,
+    agent_id: Optional[str] = "dream-cycle",
 ) -> list[dict]:
     """Extract entities from text, deduplicate, store, return entity dicts."""
     # Truncate very long text for the LLM
@@ -128,9 +129,10 @@ def extract_entities(
                     "INSERT INTO entities "
                     "(entity_id, owner_tenant_id, entity_type, canonical_name, "
                     "aliases_json, description, importance_score, mention_count, "
-                    "source_count, first_seen_at, last_seen_at, created_at, updated_at) "
+                    "source_count, first_seen_at, last_seen_at, created_at, updated_at, "
+                    "created_by_agent_id) "
                     "VALUES (:eid, :tid, :etype, :name, CAST(:aliases AS jsonb), :desc, "
-                    "0.5, 1, 1, :now, :now, :now, :now)"
+                    "0.5, 1, 1, :now, :now, :now, :now, :agent_id)"
                 ),
                 {
                     "eid": entity_id,
@@ -140,6 +142,7 @@ def extract_entities(
                     "aliases": _json.dumps(aliases),
                     "desc": description,
                     "now": now,
+                    "agent_id": agent_id,
                 },
             )
 
@@ -188,6 +191,7 @@ def extract_claims(
     segment_id: Optional[str],
     tenant_id: str,
     entity_map: Optional[dict] = None,
+    agent_id: Optional[str] = "dream-cycle",
 ) -> list[dict]:
     """Extract factual claims from text, store them, return claim dicts."""
     input_text = text_content[:3000] if len(text_content) > 3000 else text_content
@@ -243,10 +247,10 @@ def extract_claims(
                 "(claim_id, owner_tenant_id, subject_entity_id, predicate, "
                 "object_entity_id, object_literal_json, modality, confidence, "
                 "summary_text, salience_score, novelty_score, support_count, "
-                "created_at, updated_at) "
+                "created_at, updated_at, created_by_agent_id) "
                 "VALUES (:cid, :tid, :subj_eid, :pred, :obj_eid, "
                 "CAST(:obj_lit AS jsonb), :mod, :conf, :summary, "
-                "0.5, 0.5, 1, :now, :now)"
+                "0.5, 0.5, 1, :now, :now, :agent_id)"
             ),
             {
                 "cid": claim_id,
@@ -259,6 +263,7 @@ def extract_claims(
                 "conf": confidence,
                 "summary": summary_text[:500],
                 "now": now,
+                "agent_id": agent_id,
             },
         )
 
@@ -308,6 +313,7 @@ def extract_relations(
     source_id: str,
     segment_id: Optional[str],
     tenant_id: str,
+    agent_id: Optional[str] = "dream-cycle",
 ) -> list[dict]:
     """Extract relations between known entities, store them."""
     if len(entities) < 2:
@@ -396,9 +402,9 @@ def extract_relations(
                     "(relation_id, owner_tenant_id, from_node_type, from_node_id, "
                     "to_node_type, to_node_id, relation_type, confidence, weight, "
                     "support_count, first_created_at, last_confirmed_at, "
-                    "created_by, extractor_version) "
+                    "created_by, extractor_version, created_by_agent_id) "
                     "VALUES (:rid, :tid, 'entity', :fid, 'entity', :toid, "
-                    ":rtype, :conf, 1.0, 1, :now, :now, 'extraction_pipeline', :ver)"
+                    ":rtype, :conf, 1.0, 1, :now, :now, 'extraction_pipeline', :ver, :agent_id)"
                 ),
                 {
                     "rid": rel_id,
@@ -409,6 +415,7 @@ def extract_relations(
                     "conf": confidence,
                     "now": now,
                     "ver": EXTRACTOR_VERSION,
+                    "agent_id": agent_id,
                 },
             )
 
@@ -437,6 +444,7 @@ def extract_events(
     segment_id: Optional[str],
     tenant_id: str,
     entity_map: Optional[dict] = None,
+    agent_id: Optional[str] = "dream-cycle",
 ) -> list[dict]:
     """Extract events from text, store them, return event dicts."""
     input_text = text_content[:3000] if len(text_content) > 3000 else text_content
@@ -491,10 +499,10 @@ def extract_events(
                 "INSERT INTO events "
                 "(event_id, owner_tenant_id, event_type, summary, "
                 "location_entity_id, actor_entity_ids, object_entity_ids, "
-                "confidence, created_at) "
+                "confidence, created_at, created_by_agent_id) "
                 "VALUES (:eid, :tid, :etype, :summary, :loc, "
                 "CAST(:actors AS jsonb), CAST(:objects AS jsonb), "
-                ":conf, :now)"
+                ":conf, :now, :agent_id)"
             ),
             {
                 "eid": event_id,
@@ -506,6 +514,7 @@ def extract_events(
                 "objects": _json.dumps(objects),
                 "conf": confidence,
                 "now": now,
+                "agent_id": agent_id,
             },
         )
 
@@ -555,11 +564,12 @@ def extract_all_from_segment(
     text_content: str,
     source_id: str,
     tenant_id: str,
+    agent_id: Optional[str] = "dream-cycle",
 ) -> dict:
     """Run all extractors on a single segment. Returns summary of results."""
 
     # 1. Extract entities first (needed for relations)
-    entities = extract_entities(db, text_content, source_id, segment_id, tenant_id)
+    entities = extract_entities(db, text_content, source_id, segment_id, tenant_id, agent_id)
 
     # Build entity name → id map for linking claims/events
     entity_map = {}
@@ -570,13 +580,13 @@ def extract_all_from_segment(
                 entity_map[alias.lower()] = e["entity_id"]
 
     # 2. Extract claims
-    claims = extract_claims(db, text_content, source_id, segment_id, tenant_id, entity_map)
+    claims = extract_claims(db, text_content, source_id, segment_id, tenant_id, entity_map, agent_id)
 
     # 3. Extract relations (needs entity list)
-    relations = extract_relations(db, entities, text_content, source_id, segment_id, tenant_id)
+    relations = extract_relations(db, entities, text_content, source_id, segment_id, tenant_id, agent_id)
 
     # 4. Extract events
-    events = extract_events(db, text_content, source_id, segment_id, tenant_id, entity_map)
+    events = extract_events(db, text_content, source_id, segment_id, tenant_id, entity_map, agent_id)
 
     return {
         "segment_id": segment_id,

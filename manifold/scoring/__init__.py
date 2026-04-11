@@ -4,8 +4,16 @@ from .promotion import (
     PromotionFactors,
     should_promote,
     should_demote,
-    PROMOTION_THRESHOLD,
-    DEMOTION_THRESHOLD,
+    get_promotion_threshold,
+    get_demotion_threshold,
+    compute_importance,
+    compute_retrieval_frequency,
+    compute_graph_centrality,
+    compute_source_diversity,
+    compute_novelty,
+    compute_confidence,
+    compute_user_relevance,
+    compute_all_factors,
 )
 from .evidence import (
     compute_evidence_score,
@@ -13,6 +21,8 @@ from .evidence import (
     EvidenceVector,
     compute_source_authority,
     compute_specificity,
+    find_corroborating_evidence,
+    find_contradicting_evidence,
 )
 from .relation import (
     GraphFingerprint,
@@ -20,6 +30,10 @@ from .relation import (
     fingerprint_similarity,
     compute_relation_score,
     find_related_entities,
+    compute_graph_centrality as compute_relation_centrality,
+    EDGE_TYPE_TAXONOMY,
+    categorize_edge_type,
+    get_edge_types_for_category,
 )
 
 __all__ = [
@@ -28,18 +42,31 @@ __all__ = [
     "PromotionFactors",
     "should_promote",
     "should_demote",
-    "PROMOTION_THRESHOLD",
-    "DEMOTION_THRESHOLD",
+    "get_promotion_threshold",
+    "get_demotion_threshold",
+    "compute_importance",
+    "compute_retrieval_frequency",
+    "compute_source_diversity",
+    "compute_novelty",
+    "compute_confidence",
+    "compute_user_relevance",
+    "compute_all_factors",
     # Evidence
     "compute_evidence_score",
     "EvidenceFactors",
     "EvidenceVector",
     "compute_source_authority",
     "compute_specificity",
+    "find_corroborating_evidence",
+    "find_contradicting_evidence",
     # Relation
     "GraphFingerprint",
     "compute_graph_fingerprint",
     "fingerprint_similarity",
     "compute_relation_score",
     "find_related_entities",
+    "compute_relation_centrality",
+    "EDGE_TYPE_TAXONOMY",
+    "categorize_edge_type",
+    "get_edge_types_for_category",
 ]

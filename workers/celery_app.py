@@ -53,5 +53,17 @@ celery_app.conf.update(
     result_expires=86400,
 )
 
-# Auto-discover task modules
-celery_app.autodiscover_tasks(["workers"])
+# Explicitly import task modules so @celery_app.task decorators register.
+# autodiscover_tasks(["workers"]) only looks for workers/tasks.py, which doesn't
+# exist — tasks are spread across *_worker.py files. Without these imports the
+# worker boots with zero registered tasks and silently drops every job.
+from workers import (  # noqa: E402,F401
+    parser_worker,
+    embedder_worker,
+    extractor_worker,
+    summarizer_worker,
+    entity_resolver,
+    contradiction_worker,
+    importance_worker,
+    cache_warmer,
+)

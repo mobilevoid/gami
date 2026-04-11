@@ -93,6 +93,8 @@ async def _memory_recall(args: dict) -> dict:
     tenant_id = args.get("tenant_id", "claude-opus")
     tenant_ids = args.get("tenant_ids")
     max_tokens = args.get("max_tokens", 2000)
+    session_id = args.get("session_id")
+    agent_id = args.get("agent_id", "mcp-client")
 
     # Default to 'factual' to skip slow Ollama classification (~30s).
     # Claude already knows what it's looking for; override with mode param if needed.
@@ -104,6 +106,8 @@ async def _memory_recall(args: dict) -> dict:
         tenant_ids=tenant_ids,
         max_tokens=max_tokens,
         mode=mode,
+        session_id=session_id,
+        agent_id=agent_id,
     )
 
     # Format for MCP response
@@ -1319,6 +1323,43 @@ async def _memory_correct(args: dict) -> dict:
     }
 
 
+async def _memory_feedback(args: dict) -> dict:
+    """Record feedback on retrieval quality for learning.
+
+    This helps GAMI learn which retrievals were useful, improving future recall.
+    Call this after using or evaluating recalled memories.
+    """
+    from api.services.learning_service import get_retrieval_logger, OUTCOME_SIGNALS
+    from api.services.db import AsyncSessionLocal
+
+    session_id = args["session_id"]
+    feedback_type = args["feedback_type"]
+    correction_text = args.get("correction_text")
+
+    signal_value = OUTCOME_SIGNALS.get(feedback_type, 0.0)
+    retrieval_logger = get_retrieval_logger()
+
+    async with AsyncSessionLocal() as db:
+        success = await retrieval_logger.record_outcome(
+            db=db,
+            session_id=session_id,
+            outcome_type=feedback_type,
+            correction_text=correction_text,
+        )
+
+    return {
+        "status": "recorded" if success else "no_matching_log",
+        "session_id": session_id,
+        "feedback_type": feedback_type,
+        "signal_value": signal_value,
+        "message": (
+            f"Feedback recorded: {feedback_type} (signal={signal_value})"
+            if success else
+            "No recent retrieval log found for this session"
+        ),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Handler map
 # ---------------------------------------------------------------------------
@@ -1341,6 +1382,7 @@ TOOL_HANDLERS = {
     "ingest_file": _ingest_file,
     "dream_haiku": _dream_haiku,
     "memory_correct": _memory_correct,
+    "memory_feedback": _memory_feedback,
 }
 
 

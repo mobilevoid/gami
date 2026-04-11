@@ -36,6 +36,10 @@ async def get_db() -> AsyncSession:
             await session.close()
 
 
+# Alias for consistency with new services
+get_async_session = get_db
+
+
 def get_sync_db() -> Session:
     """Generator that yields a sync database session for Celery workers."""
     session = SyncSessionLocal()

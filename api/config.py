@@ -50,4 +50,9 @@ class Settings:
     # Logging
     LOG_LEVEL: str = os.getenv("GAMI_LOG_LEVEL", "INFO")
 
+    # Authentication (optional - set GAMI_API_KEY to enable)
+    API_KEY: str = os.getenv("GAMI_API_KEY", "")  # Empty = auth disabled
+    REQUIRE_AUTH_FOR_AGENTS: bool = os.getenv("GAMI_REQUIRE_AUTH_FOR_AGENTS", "false").lower() == "true"
+
+
 settings = Settings()
