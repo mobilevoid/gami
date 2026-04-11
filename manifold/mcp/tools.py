@@ -136,20 +136,54 @@ class ManifoldTools:
         Returns:
             Dict with 'results' list.
         """
+        import time
+        from ..embedding import embed_text
+
         if not query or not query.strip():
             raise query_empty()
 
-        valid_manifolds = ["topic", "claim", "procedure"]
+        valid_manifolds = ["topic", "claim", "procedure", "relation", "time", "evidence"]
         if manifold not in valid_manifolds:
             manifold = "topic"
 
-        # Direct manifold search would be implemented here
-        # For now, return empty results (stub)
+        start_time = time.time()
+
+        # Get query embedding
+        query_embedding = await embed_text(
+            query.strip(),
+            model=self.config.embedding_model,
+            base_url=self.config.ollama_url,
+        )
+
+        # Search the specified manifold via repository
+        if self.orchestrator.topic_index:
+            results = await self.orchestrator.topic_index.search_by_embedding(
+                embedding=query_embedding,
+                manifold_type=manifold,
+                limit=top_k,
+                tenant_id=tenant_id if tenant_id != "shared" else None,
+                min_score=threshold,
+            )
+        else:
+            results = []
+
+        latency_ms = (time.time() - start_time) * 1000
+
         return {
             "query": query,
             "manifold": manifold,
             "threshold": threshold,
-            "results": [],
+            "latency_ms": round(latency_ms, 2),
+            "results": [
+                {
+                    "id": r.object_id,
+                    "type": r.object_type,
+                    "text": r.text_preview[:500] if r.text_preview else "",
+                    "score": r.similarity,
+                }
+                for r in results
+                if r.similarity >= threshold
+            ],
         }
 
     async def memory_classify(
@@ -207,12 +241,111 @@ class ManifoldTools:
         Returns:
             Full citation with source, location, confidence.
         """
-        # Would query provenance table
-        return {
-            "item_id": item_id,
-            "citations": [],
-            "note": "Citation lookup not implemented in isolated module",
-        }
+        if not item_id or not item_id.strip():
+            raise QueryError("ITEM_ID_EMPTY", "Item ID cannot be empty")
+
+        # Query provenance and source information
+        if not self.orchestrator.topic_index or not self.orchestrator.topic_index.pool:
+            return {
+                "item_id": item_id,
+                "citations": [],
+                "error": "Database not connected",
+            }
+
+        pool = self.orchestrator.topic_index.pool
+        conn = await pool.acquire()
+
+        try:
+            # Get provenance records for this item
+            provenance_rows = await conn.fetch(
+                """
+                SELECT
+                    p.id as provenance_id,
+                    p.source_segment_id,
+                    p.extraction_method,
+                    p.confidence,
+                    p.created_at,
+                    s.source_id,
+                    s.text as segment_text,
+                    s.start_offset,
+                    s.end_offset,
+                    src.title as source_title,
+                    src.source_type,
+                    src.uri as source_uri,
+                    src.created_at as source_created
+                FROM provenance p
+                JOIN segments s ON s.id = p.source_segment_id
+                JOIN sources src ON src.id = s.source_id
+                WHERE p.derived_id = $1
+                ORDER BY p.confidence DESC, p.created_at DESC
+                LIMIT 10
+                """,
+                item_id,
+            )
+
+            citations = []
+            for row in provenance_rows:
+                citation = {
+                    "provenance_id": row["provenance_id"],
+                    "source": {
+                        "id": row["source_id"],
+                        "title": row["source_title"],
+                        "type": row["source_type"],
+                        "uri": row["source_uri"],
+                        "created": row["source_created"].isoformat() if row["source_created"] else None,
+                    },
+                    "location": {
+                        "segment_id": row["source_segment_id"],
+                        "start_offset": row["start_offset"],
+                        "end_offset": row["end_offset"],
+                    },
+                    "extraction_method": row["extraction_method"],
+                    "confidence": row["confidence"],
+                    "excerpt": row["segment_text"][:300] if row["segment_text"] else None,
+                }
+                citations.append(citation)
+
+            # If no provenance, try to get direct source info
+            if not citations:
+                # Check if item is a segment itself
+                segment_row = await conn.fetchrow(
+                    """
+                    SELECT
+                        s.id, s.text, s.source_id, s.start_offset, s.end_offset,
+                        src.title, src.source_type, src.uri
+                    FROM segments s
+                    JOIN sources src ON src.id = s.source_id
+                    WHERE s.id = $1
+                    """,
+                    item_id,
+                )
+
+                if segment_row:
+                    citations.append({
+                        "source": {
+                            "id": segment_row["source_id"],
+                            "title": segment_row["title"],
+                            "type": segment_row["source_type"],
+                            "uri": segment_row["uri"],
+                        },
+                        "location": {
+                            "segment_id": item_id,
+                            "start_offset": segment_row["start_offset"],
+                            "end_offset": segment_row["end_offset"],
+                        },
+                        "confidence": 1.0,
+                        "excerpt": segment_row["text"][:300] if segment_row["text"] else None,
+                        "is_primary": True,
+                    })
+
+            return {
+                "item_id": item_id,
+                "citations": citations,
+                "citation_count": len(citations),
+            }
+
+        finally:
+            await pool.release(conn)
 
     async def memory_verify(
         self,
@@ -230,30 +363,118 @@ class ManifoldTools:
         Returns:
             Verification result with supporting/contradicting evidence.
         """
+        from ..scoring.evidence import compute_evidence_score, EvidenceFactors
+        from ..canonical.claim_normalizer import ClaimNormalizer
+
         if not claim or not claim.strip():
             raise query_empty()
 
-        # Would use evidence scoring and contradiction detection
+        # Normalize the claim to canonical SPO form for comparison
+        normalizer = ClaimNormalizer()
+        canonical_claim = normalizer.normalize_text(claim.strip())
+
+        # Retrieve evidence using verification mode
         result = await self.orchestrator.recall(
             query=claim.strip(),
-            top_k=10,
+            top_k=20,
             tenant_id=tenant_id,
             mode_override=QueryModeV2.VERIFICATION,
         )
 
+        supporting_evidence = []
+        contradicting_evidence = []
+        neutral_evidence = []
+
+        for candidate in result.candidates:
+            # Get evidence scores
+            evidence_score = candidate.manifold_scores.evidence if candidate.manifold_scores else 0.5
+
+            # Determine if this evidence supports or contradicts
+            # Check for negation patterns and semantic opposition
+            text_lower = (candidate.text or "").lower()
+            claim_lower = claim.lower()
+
+            # Simple contradiction detection
+            negation_words = ["not", "never", "no ", "isn't", "wasn't", "doesn't", "didn't", "won't", "can't", "couldn't"]
+            has_negation = any(neg in text_lower for neg in negation_words)
+            claim_has_negation = any(neg in claim_lower for neg in negation_words)
+
+            # Check for subject/predicate overlap
+            if canonical_claim:
+                subject_match = canonical_claim.subject and canonical_claim.subject.lower() in text_lower
+                predicate_match = canonical_claim.predicate and canonical_claim.predicate.lower() in text_lower
+            else:
+                subject_match = False
+                predicate_match = False
+
+            # Classify evidence
+            if evidence_score > 0.7 and (has_negation != claim_has_negation) and (subject_match or predicate_match):
+                contradicting_evidence.append({
+                    "id": candidate.object_id,
+                    "type": candidate.object_type,
+                    "text": candidate.text[:500],
+                    "evidence_score": evidence_score,
+                    "fused_score": candidate.fused_score,
+                    "reason": "Contains opposing assertion with high evidence score",
+                })
+            elif evidence_score > 0.5 and (subject_match or predicate_match):
+                supporting_evidence.append({
+                    "id": candidate.object_id,
+                    "type": candidate.object_type,
+                    "text": candidate.text[:500],
+                    "evidence_score": evidence_score,
+                    "fused_score": candidate.fused_score,
+                })
+            else:
+                neutral_evidence.append({
+                    "id": candidate.object_id,
+                    "type": candidate.object_type,
+                    "text": candidate.text[:300],
+                    "evidence_score": evidence_score,
+                })
+
+        # Determine verification status
+        supporting_count = len(supporting_evidence)
+        contradicting_count = len(contradicting_evidence)
+        total_high_evidence = supporting_count + contradicting_count
+
+        if total_high_evidence == 0:
+            verification_status = "insufficient_evidence"
+            verification_confidence = 0.2
+        elif contradicting_count > supporting_count * 2:
+            verification_status = "contradicted"
+            verification_confidence = min(0.9, 0.5 + (contradicting_count / 10))
+        elif supporting_count > contradicting_count * 2:
+            verification_status = "supported"
+            verification_confidence = min(0.9, 0.5 + (supporting_count / 10))
+        elif supporting_count > 0 and contradicting_count == 0:
+            verification_status = "likely_supported"
+            verification_confidence = min(0.7, 0.4 + (supporting_count / 10))
+        elif contradicting_count > 0 and supporting_count == 0:
+            verification_status = "likely_contradicted"
+            verification_confidence = min(0.7, 0.4 + (contradicting_count / 10))
+        else:
+            verification_status = "uncertain"
+            verification_confidence = 0.3
+
         return {
             "claim": claim,
-            "verification_status": "unknown",  # Would be: confirmed/contradicted/uncertain
-            "supporting_evidence": [
-                {
-                    "id": c.item_id,
-                    "text": c.text,
-                    "evidence_score": c.manifold_scores.evidence,
-                }
-                for c in result.candidates[:5]
-            ],
-            "contradicting_evidence": [],
-            "confidence": result.confidence,
+            "canonical_form": {
+                "subject": canonical_claim.subject if canonical_claim else None,
+                "predicate": canonical_claim.predicate if canonical_claim else None,
+                "object": canonical_claim.object if canonical_claim else None,
+            } if canonical_claim else None,
+            "verification_status": verification_status,
+            "verification_confidence": round(verification_confidence, 3),
+            "supporting_evidence": supporting_evidence[:5],
+            "contradicting_evidence": contradicting_evidence[:5],
+            "neutral_evidence": neutral_evidence[:3],
+            "evidence_summary": {
+                "supporting_count": supporting_count,
+                "contradicting_count": contradicting_count,
+                "total_candidates": len(result.candidates),
+            },
+            "retrieval_latency_ms": result.latency_ms,
         }
 
     async def manifold_stats(
@@ -268,20 +489,140 @@ class ManifoldTools:
         Returns:
             Stats about embeddings, promotions, queries, etc.
         """
-        # Would query database for counts
-        return {
+        import redis.asyncio as redis
+        from datetime import datetime, timezone, timedelta
+
+        stats = {
             "tenant_id": tenant_id,
-            "embeddings": {
-                "topic": 0,
-                "claim": 0,
-                "procedure": 0,
-            },
-            "promoted_objects": 0,
-            "canonical_claims": 0,
-            "queries_today": 0,
-            "cache_hit_rate": 0.0,
-            "note": "Stats not available in isolated module",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
         }
+
+        # Database stats
+        if self.orchestrator.topic_index and self.orchestrator.topic_index.pool:
+            pool = self.orchestrator.topic_index.pool
+            conn = await pool.acquire()
+
+            try:
+                # Tenant filter for queries
+                tenant_filter = "AND tenant_id = $1" if tenant_id != "shared" else ""
+                params = [tenant_id] if tenant_id != "shared" else []
+
+                # Embedding counts by manifold
+                embed_query = f"""
+                    SELECT manifold_type, COUNT(*) as cnt
+                    FROM manifold_embeddings
+                    WHERE 1=1 {tenant_filter}
+                    GROUP BY manifold_type
+                """
+                embed_rows = await conn.fetch(embed_query, *params) if params else await conn.fetch(embed_query)
+                stats["embeddings"] = {row["manifold_type"]: row["cnt"] for row in embed_rows}
+
+                # Promotion tier breakdown
+                promo_query = f"""
+                    SELECT tier, COUNT(*) as cnt
+                    FROM promotion_scores
+                    WHERE 1=1 {tenant_filter.replace('tenant_id', 'object_type')}
+                    GROUP BY tier
+                """
+                promo_rows = await conn.fetch(promo_query.replace("$1", f"'{tenant_id}'") if tenant_id != "shared" else promo_query)
+                stats["promotion_tiers"] = {row["tier"]: row["cnt"] for row in promo_rows}
+
+                # Promoted object count
+                promoted_query = """
+                    SELECT COUNT(*) as cnt FROM promotion_scores WHERE tier = 'promoted'
+                """
+                promoted_row = await conn.fetchrow(promoted_query)
+                stats["promoted_objects"] = promoted_row["cnt"] if promoted_row else 0
+
+                # Canonical claims count
+                claims_query = f"""
+                    SELECT COUNT(*) as cnt FROM canonical_claims WHERE 1=1 {tenant_filter}
+                """
+                claims_row = await conn.fetchrow(claims_query, *params) if params else await conn.fetchrow(claims_query)
+                stats["canonical_claims"] = claims_row["cnt"] if claims_row else 0
+
+                # Canonical procedures count
+                procs_query = f"""
+                    SELECT COUNT(*) as cnt FROM canonical_procedures WHERE 1=1 {tenant_filter}
+                """
+                procs_row = await conn.fetchrow(procs_query, *params) if params else await conn.fetchrow(procs_query)
+                stats["canonical_procedures"] = procs_row["cnt"] if procs_row else 0
+
+                # Query stats (last 24 hours)
+                yesterday = datetime.now(timezone.utc) - timedelta(hours=24)
+                query_stats = await conn.fetchrow(
+                    f"""
+                    SELECT
+                        COUNT(*) as total_queries,
+                        AVG(latency_ms) as avg_latency,
+                        SUM(CASE WHEN success THEN 1 ELSE 0 END) as successful,
+                        SUM(CASE WHEN from_cache THEN 1 ELSE 0 END) as cache_hits
+                    FROM query_logs
+                    WHERE executed_at > $1 {tenant_filter.replace('$1', '$2')}
+                    """,
+                    yesterday, *params
+                ) if params else await conn.fetchrow(
+                    """
+                    SELECT
+                        COUNT(*) as total_queries,
+                        AVG(latency_ms) as avg_latency,
+                        SUM(CASE WHEN success THEN 1 ELSE 0 END) as successful,
+                        SUM(CASE WHEN from_cache THEN 1 ELSE 0 END) as cache_hits
+                    FROM query_logs
+                    WHERE executed_at > $1
+                    """,
+                    yesterday,
+                )
+
+                if query_stats:
+                    total = query_stats["total_queries"] or 0
+                    cache_hits = query_stats["cache_hits"] or 0
+                    stats["queries_24h"] = {
+                        "total": total,
+                        "successful": query_stats["successful"] or 0,
+                        "avg_latency_ms": round(query_stats["avg_latency"] or 0, 2),
+                        "cache_hits": cache_hits,
+                        "cache_hit_rate": round(cache_hits / max(1, total), 3),
+                    }
+
+                # Shadow mode stats
+                shadow_stats = await conn.fetchrow(
+                    """
+                    SELECT
+                        COUNT(*) as total,
+                        AVG(overlap_ratio) as avg_overlap,
+                        SUM(CASE WHEN manifold_better THEN 1 ELSE 0 END) as manifold_wins
+                    FROM shadow_comparisons
+                    WHERE created_at > NOW() - INTERVAL '24 hours'
+                    """
+                )
+                if shadow_stats and shadow_stats["total"]:
+                    stats["shadow_mode"] = {
+                        "comparisons_24h": shadow_stats["total"],
+                        "avg_overlap": round(shadow_stats["avg_overlap"] or 0, 3),
+                        "manifold_win_rate": round((shadow_stats["manifold_wins"] or 0) / max(1, shadow_stats["total"]), 3),
+                    }
+
+            finally:
+                await pool.release(conn)
+        else:
+            stats["database"] = "not connected"
+
+        # Redis cache stats
+        try:
+            redis_client = redis.from_url(self.config.redis_url, decode_responses=True)
+            try:
+                info = await redis_client.info("memory")
+                stats["cache"] = {
+                    "used_memory": info.get("used_memory_human", "N/A"),
+                    "total_keys": await redis_client.dbsize(),
+                }
+            finally:
+                await redis_client.close()
+        except Exception as e:
+            stats["cache"] = {"status": f"error: {e}"}
+
+        return stats
 
 
 # Tool definitions for MCP server registration

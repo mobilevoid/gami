@@ -228,8 +228,47 @@ class RetrievalOrchestrator:
         tenant_id: str,
     ) -> List[RetrievalCandidate]:
         """Retrieve from topic manifold (dense vector)."""
-        # Stub: would use pgvector similarity search
-        return []
+        if not self.topic_index:
+            return []
+
+        try:
+            # Get query embedding
+            from ..embedding import embed_text
+            query_embedding = await embed_text(
+                query,
+                model=self.config.embedding_model,
+                base_url=self.config.ollama_url,
+            )
+
+            # Search via repository
+            results = await self.topic_index.search_by_embedding(
+                embedding=query_embedding,
+                manifold_type="topic",
+                limit=k,
+                tenant_id=tenant_id if tenant_id != "shared" else None,
+            )
+
+            candidates = []
+            for object_id, similarity in results:
+                # Fetch object details
+                obj = await self.topic_index.get_object(object_id)
+                if obj:
+                    candidates.append(RetrievalCandidate(
+                        item_id=object_id,
+                        item_type=obj.get("type", "segment"),
+                        text=obj.get("text", ""),
+                        manifold_scores=ManifoldScore(topic=similarity),
+                        metadata={
+                            "source_id": obj.get("source_id"),
+                            "tenant_id": obj.get("tenant_id", tenant_id),
+                        },
+                    ))
+
+            return candidates
+
+        except Exception as e:
+            logger.error(f"Topic retrieval error: {e}")
+            return []
 
     async def _retrieve_claims(
         self,
@@ -238,8 +277,56 @@ class RetrievalOrchestrator:
         tenant_id: str,
     ) -> List[RetrievalCandidate]:
         """Retrieve from claim manifold (SPO-aware vectors)."""
-        # Stub: would search canonical_claims with SPO embeddings
-        return []
+        if not self.claim_index:
+            return []
+
+        try:
+            # Normalize query to SPO form for better matching
+            from ..canonical.claim_normalizer import ClaimNormalizer
+            normalizer = ClaimNormalizer()
+            normalized = normalizer.normalize(query)
+
+            # Use canonical text for embedding if available
+            search_text = normalized.canonical_text if normalized else query
+
+            from ..embedding import embed_text
+            query_embedding = await embed_text(
+                search_text,
+                model=self.config.embedding_model,
+                base_url=self.config.ollama_url,
+            )
+
+            # Search canonical claims
+            results = await self.claim_index.search_by_embedding(
+                embedding=query_embedding,
+                manifold_type="claim",
+                limit=k,
+                tenant_id=tenant_id if tenant_id != "shared" else None,
+            )
+
+            candidates = []
+            for object_id, similarity in results:
+                claim = await self.claim_index.get_canonical_claim(object_id)
+                if claim:
+                    candidates.append(RetrievalCandidate(
+                        item_id=object_id,
+                        item_type="claim",
+                        text=claim.canonical_text,
+                        manifold_scores=ManifoldScore(claim=similarity),
+                        metadata={
+                            "subject": claim.subject,
+                            "predicate": claim.predicate,
+                            "object": claim.object,
+                            "modality": claim.modality,
+                            "source_id": claim.claim_id,
+                        },
+                    ))
+
+            return candidates
+
+        except Exception as e:
+            logger.error(f"Claim retrieval error: {e}")
+            return []
 
     async def _retrieve_procedures(
         self,
@@ -248,8 +335,51 @@ class RetrievalOrchestrator:
         tenant_id: str,
     ) -> List[RetrievalCandidate]:
         """Retrieve from procedure manifold."""
-        # Stub: would search canonical_procedures
-        return []
+        if not self.procedure_index:
+            return []
+
+        try:
+            from ..embedding import embed_text
+            query_embedding = await embed_text(
+                query,
+                model=self.config.embedding_model,
+                base_url=self.config.ollama_url,
+            )
+
+            # Search procedure embeddings
+            results = await self.procedure_index.search_by_embedding(
+                embedding=query_embedding,
+                manifold_type="procedure",
+                limit=k,
+                tenant_id=tenant_id if tenant_id != "shared" else None,
+            )
+
+            candidates = []
+            for object_id, similarity in results:
+                proc = await self.procedure_index.get_procedure(object_id)
+                if proc:
+                    # Build step summary text
+                    steps_text = "\n".join(
+                        f"{s['order']}. {s['text']}"
+                        for s in proc.get("steps", [])
+                    )
+                    candidates.append(RetrievalCandidate(
+                        item_id=object_id,
+                        item_type="procedure",
+                        text=f"{proc.get('title', 'Procedure')}\n{steps_text}",
+                        manifold_scores=ManifoldScore(procedure=similarity),
+                        metadata={
+                            "title": proc.get("title"),
+                            "step_count": len(proc.get("steps", [])),
+                            "source_id": proc.get("segment_id"),
+                        },
+                    ))
+
+            return candidates
+
+        except Exception as e:
+            logger.error(f"Procedure retrieval error: {e}")
+            return []
 
     async def _retrieve_relations(
         self,
@@ -258,8 +388,81 @@ class RetrievalOrchestrator:
         tenant_id: str,
     ) -> List[RetrievalCandidate]:
         """Retrieve via graph expansion (relation manifold)."""
-        # Stub: would do AGE graph queries
-        return []
+        if not self.graph_client:
+            return []
+
+        try:
+            # Extract entities from query for graph seeding
+            from ..scoring.relation import compute_graph_fingerprint
+
+            # Query AGE graph for related entities
+            # First, find entities mentioned in query
+            cypher_query = """
+                SELECT * FROM cypher('gami', $$
+                    MATCH (e:Entity)
+                    WHERE toLower(e.name) CONTAINS toLower($query)
+                    OR toLower(e.aliases) CONTAINS toLower($query)
+                    RETURN e.id as id, e.name as name, e.type as type
+                    LIMIT $limit
+                $$) as (id agtype, name agtype, type agtype)
+            """
+
+            seed_entities = await self.graph_client.fetch(
+                cypher_query,
+                {"query": query, "limit": 5}
+            )
+
+            if not seed_entities:
+                return []
+
+            # Expand from seed entities
+            candidates = []
+            for seed in seed_entities:
+                seed_id = str(seed["id"]).strip('"')
+
+                # Get 1-hop and 2-hop neighbors
+                expansion_query = """
+                    SELECT * FROM cypher('gami', $$
+                        MATCH (e:Entity {id: $seed_id})-[r]-(neighbor:Entity)
+                        OPTIONAL MATCH (neighbor)-[r2]-(hop2:Entity)
+                        WHERE hop2.id <> e.id
+                        RETURN DISTINCT
+                            neighbor.id as id,
+                            neighbor.name as name,
+                            neighbor.type as type,
+                            type(r) as relation,
+                            neighbor.text as text
+                        LIMIT $limit
+                    $$) as (id agtype, name agtype, type agtype, relation agtype, text agtype)
+                """
+
+                neighbors = await self.graph_client.fetch(
+                    expansion_query,
+                    {"seed_id": seed_id, "limit": k}
+                )
+
+                for neighbor in neighbors:
+                    neighbor_id = str(neighbor["id"]).strip('"')
+                    # Compute relation score based on edge type and distance
+                    relation_score = 0.8  # 1-hop gets high score
+
+                    candidates.append(RetrievalCandidate(
+                        item_id=neighbor_id,
+                        item_type=str(neighbor["type"]).strip('"'),
+                        text=str(neighbor.get("text", neighbor["name"])).strip('"'),
+                        manifold_scores=ManifoldScore(relation=relation_score),
+                        metadata={
+                            "seed_entity": seed_id,
+                            "relation_type": str(neighbor["relation"]).strip('"'),
+                            "entity_name": str(neighbor["name"]).strip('"'),
+                        },
+                    ))
+
+            return candidates
+
+        except Exception as e:
+            logger.error(f"Relation retrieval error: {e}")
+            return []
 
     def _fuse_and_rank(
         self,
@@ -353,13 +556,51 @@ class RetrievalOrchestrator:
         candidates: List[RetrievalCandidate],
     ):
         """Attach source citations to candidates."""
-        for candidate in candidates:
-            # Stub: would query provenance table
-            candidate.citations = [{
-                "source_id": candidate.metadata.get("source_id"),
-                "segment_id": candidate.item_id,
-                "confidence": candidate.fused_score,
-            }]
+        if not self.topic_index:
+            # Fallback: basic citation from metadata
+            for candidate in candidates:
+                candidate.citations = [{
+                    "source_id": candidate.metadata.get("source_id"),
+                    "segment_id": candidate.item_id,
+                    "confidence": candidate.fused_score,
+                }]
+            return
+
+        try:
+            for candidate in candidates:
+                # Query provenance table for full citation
+                provenance = await self.topic_index.get_provenance(candidate.item_id)
+
+                if provenance:
+                    candidate.citations = [{
+                        "source_id": provenance.get("source_id"),
+                        "source_name": provenance.get("source_name"),
+                        "segment_id": candidate.item_id,
+                        "page": provenance.get("page"),
+                        "line_start": provenance.get("line_start"),
+                        "line_end": provenance.get("line_end"),
+                        "char_offset": provenance.get("char_offset"),
+                        "timestamp": provenance.get("timestamp"),
+                        "speaker": provenance.get("speaker"),
+                        "confidence": candidate.fused_score,
+                        "url": provenance.get("url"),
+                    }]
+                else:
+                    candidate.citations = [{
+                        "source_id": candidate.metadata.get("source_id"),
+                        "segment_id": candidate.item_id,
+                        "confidence": candidate.fused_score,
+                    }]
+
+        except Exception as e:
+            logger.warning(f"Citation attachment error: {e}")
+            # Fallback
+            for candidate in candidates:
+                candidate.citations = [{
+                    "source_id": candidate.metadata.get("source_id"),
+                    "segment_id": candidate.item_id,
+                    "confidence": candidate.fused_score,
+                }]
 
     def _should_shadow(self) -> bool:
         """Determine if this query should be shadowed."""
@@ -373,12 +614,44 @@ class RetrievalOrchestrator:
         tenant_id: str,
     ) -> Dict[str, Any]:
         """Run old retrieval and compare with new."""
-        # Stub: would call legacy retrieval endpoint
-        return {
-            "enabled": True,
-            "old_system": "legacy_retrieval",
-            "comparison_pending": True,
-        }
+        from .shadow_mode import ShadowRunner, ShadowComparison
+
+        try:
+            # Create shadow runner with legacy retriever
+            # The legacy retriever would be passed in during orchestrator init
+            legacy_retriever = getattr(self, 'legacy_retriever', None)
+
+            runner = ShadowRunner(
+                new_retriever=self,
+                old_retriever=legacy_retriever,
+                storage=self.topic_index,  # Use same storage for logging
+            )
+
+            comparison = await runner.compare(
+                query=query,
+                top_k=len(new_results),
+                tenant_id=tenant_id,
+                new_results=new_results,
+            )
+
+            return {
+                "enabled": True,
+                "result": comparison.result.value,
+                "overlap_ratio": comparison.overlap_ratio,
+                "rank_correlation": comparison.rank_correlation,
+                "new_latency_ms": comparison.new_latency_ms,
+                "old_latency_ms": comparison.old_latency_ms,
+                "new_count": len(comparison.new_ids),
+                "old_count": len(comparison.old_ids),
+                "overlap_count": len(comparison.overlap_ids),
+            }
+
+        except Exception as e:
+            logger.error(f"Shadow comparison error: {e}")
+            return {
+                "enabled": True,
+                "error": str(e),
+            }
 
     def _cache_key(self, query: str, tenant_id: str, top_k: int) -> str:
         """Generate cache key for query."""
@@ -387,14 +660,98 @@ class RetrievalOrchestrator:
         return f"recall:{hashlib.md5(content.encode()).hexdigest()}"
 
     async def _get_cached(self, key: str) -> Optional[RetrievalResult]:
-        """Get cached result."""
-        # Stub: would use Redis
-        return None
+        """Get cached result from Redis."""
+        if not self.cache_client:
+            return None
+
+        try:
+            import json
+            cached_data = await self.cache_client.get(key)
+            if not cached_data:
+                return None
+
+            data = json.loads(cached_data)
+
+            # Reconstruct RetrievalResult from cached data
+            candidates = [
+                RetrievalCandidate(
+                    item_id=c["item_id"],
+                    item_type=c["item_type"],
+                    text=c["text"],
+                    manifold_scores=ManifoldScore(**c["manifold_scores"]),
+                    fused_score=c["fused_score"],
+                    citations=c.get("citations", []),
+                    metadata=c.get("metadata", {}),
+                )
+                for c in data["candidates"]
+            ]
+
+            return RetrievalResult(
+                query=data["query"],
+                mode=QueryModeV2(data["mode"]),
+                confidence=data["confidence"],
+                candidates=candidates,
+                manifold_weights=ManifoldWeights(**data["manifold_weights"]),
+                latency_ms=data["latency_ms"],
+                from_cache=True,
+            )
+
+        except Exception as e:
+            logger.warning(f"Cache retrieval error: {e}")
+            return None
 
     async def _set_cached(self, key: str, result: RetrievalResult):
-        """Cache result."""
-        # Stub: would use Redis with TTL
-        pass
+        """Cache result to Redis with TTL."""
+        if not self.cache_client:
+            return
+
+        try:
+            import json
+
+            # Serialize result to JSON
+            data = {
+                "query": result.query,
+                "mode": result.mode.value,
+                "confidence": result.confidence,
+                "candidates": [
+                    {
+                        "item_id": c.item_id,
+                        "item_type": c.item_type,
+                        "text": c.text,
+                        "manifold_scores": {
+                            "topic": c.manifold_scores.topic,
+                            "claim": c.manifold_scores.claim,
+                            "procedure": c.manifold_scores.procedure,
+                            "relation": c.manifold_scores.relation,
+                            "time": c.manifold_scores.time,
+                            "evidence": c.manifold_scores.evidence,
+                        },
+                        "fused_score": c.fused_score,
+                        "citations": c.citations,
+                        "metadata": c.metadata,
+                    }
+                    for c in result.candidates
+                ],
+                "manifold_weights": {
+                    "topic": result.manifold_weights.topic,
+                    "claim": result.manifold_weights.claim,
+                    "procedure": result.manifold_weights.procedure,
+                    "relation": result.manifold_weights.relation,
+                    "time": result.manifold_weights.time,
+                    "evidence": result.manifold_weights.evidence,
+                },
+                "latency_ms": result.latency_ms,
+            }
+
+            # Cache with TTL from config
+            await self.cache_client.setex(
+                key,
+                self.config.query_cache_ttl_seconds,
+                json.dumps(data),
+            )
+
+        except Exception as e:
+            logger.warning(f"Cache storage error: {e}")
 
 
 # Convenience function
