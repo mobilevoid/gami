@@ -205,3 +205,83 @@ def set_config(config: ManifoldConfig) -> None:
     """Set global config instance."""
     global _config
     _config = config
+
+
+# =============================================================================
+# FORWARD COMPATIBILITY WITH CONFIG V2
+# =============================================================================
+# Import the new config system for advanced features.
+# The new system is backward-compatible with this one.
+
+try:
+    from .config_v2 import (
+        ManifoldConfigV2,
+        ScoringWeights,
+        LearningConfig,
+        ConsolidationConfig,
+        CausalConfig,
+        SubconsciousConfig,
+        get_config as get_config_v2,
+        set_config as set_config_v2,
+        reload_config,
+    )
+    from .config_loader import (
+        ConfigLoader,
+        get_loader,
+        get_config_for_context,
+        invalidate_config,
+    )
+
+    CONFIG_V2_AVAILABLE = True
+except ImportError:
+    CONFIG_V2_AVAILABLE = False
+
+
+def get_scoring_weights() -> "ScoringWeights":
+    """Get scoring weights from v2 config.
+
+    Falls back to extracting from v1 config if v2 not available.
+    """
+    if CONFIG_V2_AVAILABLE:
+        return get_config_v2().scoring
+
+    # Fallback: construct from v1 config
+    cfg = get_config()
+    from dataclasses import dataclass
+
+    @dataclass
+    class FallbackScoringWeights:
+        evidence_authority: float = 0.25
+        evidence_corroboration: float = 0.30
+        evidence_recency: float = 0.15
+        evidence_specificity: float = 0.10
+        evidence_non_contradiction: float = 0.20
+        evidence_contradiction_exponent: float = 1.5
+        beta_lexical: float = cfg.beta_lexical
+        beta_alias: float = cfg.beta_alias
+        beta_cache: float = cfg.beta_cache
+        penalty_noise: float = cfg.penalty_noise
+        penalty_duplicate: float = cfg.penalty_duplicate
+        penalty_contradiction: float = cfg.penalty_contradiction
+        recency_halflife_days: float = cfg.recency_halflife_days
+        promotion_importance: float = cfg.promotion_weight_importance
+        promotion_retrieval: float = cfg.promotion_weight_retrieval
+        promotion_diversity: float = cfg.promotion_weight_diversity
+        promotion_confidence: float = cfg.promotion_weight_confidence
+        promotion_novelty: float = cfg.promotion_weight_novelty
+        promotion_centrality: float = cfg.promotion_weight_centrality
+        promotion_relevance: float = cfg.promotion_weight_relevance
+
+        def get_authority(self, source_type: str) -> float:
+            authorities = {
+                "documentation": 0.90,
+                "configuration": 0.85,
+                "code_comment": 0.70,
+                "assistant_response": 0.60,
+                "conversation": 0.50,
+                "user_message": 0.40,
+                "log": 0.30,
+            }
+            return authorities.get(source_type, 0.30)
+
+    return FallbackScoringWeights()
