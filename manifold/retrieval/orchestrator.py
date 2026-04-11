@@ -28,7 +28,7 @@ from ..config import get_config
 from .query_classifier_v2 import classify_query_v2, QueryClassificationV2
 from .manifold_fusion import ManifoldFusion, percentile_normalize
 
-logger = logging.getLogger("gami.manifold.orchestrator")
+logger = logging.getLogger("manifold.orchestrator")
 
 
 @dataclass

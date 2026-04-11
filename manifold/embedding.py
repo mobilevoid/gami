@@ -13,7 +13,7 @@ from typing import List, Optional, Dict, Tuple
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-logger = logging.getLogger("gami.manifold.embedding")
+logger = logging.getLogger("manifold.embedding")
 
 
 @dataclass

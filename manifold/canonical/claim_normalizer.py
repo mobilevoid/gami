@@ -23,7 +23,7 @@ from ..models.schemas import (
     Modality,
 )
 
-logger = logging.getLogger("gami.manifold.canonical.claim")
+logger = logging.getLogger("manifold.canonical.claim")
 
 
 # Patterns for modality detection

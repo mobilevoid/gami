@@ -33,7 +33,7 @@ from ..models.schemas import (
     ManifoldType,
 )
 
-logger = logging.getLogger("gami.manifold.embeddings.promotion")
+logger = logging.getLogger("manifold.embeddings.promotion")
 
 
 # Promotion thresholds

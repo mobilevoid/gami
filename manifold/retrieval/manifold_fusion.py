@@ -27,7 +27,7 @@ from ..models.schemas import (
     QueryModeV2,
 )
 
-logger = logging.getLogger("gami.manifold.retrieval.fusion")
+logger = logging.getLogger("manifold.retrieval.fusion")
 
 
 # Secondary signal weights (β coefficients)

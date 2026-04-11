@@ -40,13 +40,8 @@ logger = logging.getLogger("migrate_claims")
 async def get_db_connection():
     """Get database connection."""
     config = get_config()
-    return await asyncpg.connect(
-        host=os.environ.get("GAMI_DB_HOST", "localhost"),
-        port=int(os.environ.get("GAMI_DB_PORT", "5433")),
-        user=os.environ.get("GAMI_DB_USER", "gami"),
-        password=os.environ.get("GAMI_DB_PASSWORD", ""),
-        database=os.environ.get("GAMI_DB_NAME", "gami"),
-    )
+    db_url = os.environ.get("DATABASE_URL", config.database_url)
+    return await asyncpg.connect(db_url)
 
 
 async def get_claims_batch(conn, offset: int, limit: int) -> List[dict]:

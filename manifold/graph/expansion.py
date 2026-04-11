@@ -14,7 +14,7 @@ import logging
 from typing import Optional, List, Dict, Any, Set
 from dataclasses import dataclass, field
 
-logger = logging.getLogger("gami.manifold.graph.expansion")
+logger = logging.getLogger("manifold.graph.expansion")
 
 
 # Relation type priors — higher = more valuable for retrieval

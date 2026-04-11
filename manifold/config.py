@@ -86,8 +86,12 @@ class ManifoldConfig:
     shadow_mode_enabled: bool = False
     shadow_sample_rate: float = 0.1  # Fraction of queries to shadow
 
+    # === Database Settings ===
+    database_url: str = "postgresql://localhost:5432/manifold"
+    graph_name: str = "manifold_graph"
+
     # === Cache Settings ===
-    redis_url: str = "redis://localhost:6380/0"
+    redis_url: str = "redis://localhost:6379/0"
     query_cache_ttl_seconds: int = 300
     embedding_cache_ttl_seconds: int = 3600
 
@@ -134,6 +138,9 @@ class ManifoldConfig:
 
         # Override from environment
         env_mappings = {
+            "DATABASE_URL": "database_url",
+            "REDIS_URL": "redis_url",
+            "MANIFOLD_GRAPH_NAME": "graph_name",
             "MANIFOLD_EMBEDDING_MODEL": "embedding_model",
             "MANIFOLD_EMBEDDING_DIM": ("embedding_dim", int),
             "MANIFOLD_OLLAMA_URL": "ollama_url",

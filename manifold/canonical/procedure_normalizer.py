@@ -25,7 +25,7 @@ from ..models.schemas import (
     ProcedureStep,
 )
 
-logger = logging.getLogger("gami.manifold.canonical.procedure")
+logger = logging.getLogger("manifold.canonical.procedure")
 
 
 # Patterns for detecting procedural content

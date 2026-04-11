@@ -31,7 +31,7 @@ from .query_classifier_v2 import classify_query_v2
 from .manifold_fusion import ManifoldFusion, compute_type_fit, compute_noise_penalty
 from ..embeddings.manifold_embedder import ManifoldEmbedder
 
-logger = logging.getLogger("gami.manifold.retrieval.anchor")
+logger = logging.getLogger("manifold.retrieval.anchor")
 
 
 class AnchorRetriever:

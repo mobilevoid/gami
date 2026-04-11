@@ -30,7 +30,7 @@ from ..canonical.forms import (
     CanonicalEntityForm,
 )
 
-logger = logging.getLogger("gami.manifold.embeddings.embedder")
+logger = logging.getLogger("manifold.embeddings.embedder")
 
 
 # Embedding dimensions

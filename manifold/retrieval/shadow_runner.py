@@ -23,7 +23,7 @@ from ..models.schemas import (
     ManifoldWeights,
 )
 
-logger = logging.getLogger("gami.manifold.retrieval.shadow")
+logger = logging.getLogger("manifold.retrieval.shadow")
 
 
 @dataclass

@@ -33,7 +33,7 @@ def cmd_migrate(args):
     from .config import get_config
 
     config = get_config()
-    db_url = f"postgresql://gami:gami@localhost:5433/gami"
+    db_url = config.database_url
 
     async def run_migrations():
         import asyncpg
@@ -106,7 +106,7 @@ def cmd_embed(args):
     from .config import get_config
 
     config = get_config()
-    db_url = f"postgresql://gami:gami@localhost:5433/gami"
+    db_url = config.database_url
     batch_size = args.batch_size
     tenant_id = args.tenant
 
@@ -198,7 +198,7 @@ def cmd_promote(args):
     from .config import get_config
 
     config = get_config()
-    db_url = f"postgresql://gami:gami@localhost:5433/gami"
+    db_url = config.database_url
     batch_size = args.batch_size
 
     logger.info(f"Computing promotion scores for {args.type}")
@@ -283,7 +283,7 @@ def cmd_stats(args):
     from .config import get_config
 
     config = get_config()
-    db_url = f"postgresql://gami:gami@localhost:5433/gami"
+    db_url = config.database_url
 
     async def get_stats():
         import asyncpg
@@ -516,7 +516,7 @@ def cmd_shadow(args):
     from .config import get_config
 
     config = get_config()
-    db_url = f"postgresql://gami:gami@localhost:5433/gami"
+    db_url = config.database_url
 
     async def run_shadow_command():
         import asyncpg

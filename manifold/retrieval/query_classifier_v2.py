@@ -21,7 +21,7 @@ from ..models.schemas import (
     get_alpha_weights,
 )
 
-logger = logging.getLogger("gami.manifold.retrieval.classifier")
+logger = logging.getLogger("manifold.retrieval.classifier")
 
 
 # ---------------------------------------------------------------------------

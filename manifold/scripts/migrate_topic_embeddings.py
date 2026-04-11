@@ -5,8 +5,8 @@ This script copies existing embeddings from segments, entities, claims,
 and memories into the manifold_embeddings table with manifold_type='topic'.
 
 Usage:
-    python migrate_topic_embeddings.py --tenant claude-opus
-    python migrate_topic_embeddings.py --tenant books --batch-size 1000
+    python migrate_topic_embeddings.py --tenant my-tenant
+    python migrate_topic_embeddings.py --tenant shared --batch-size 1000
     python migrate_topic_embeddings.py --all --dry-run
 
 Requirements:
@@ -139,7 +139,7 @@ def main():
     if not args.tenant and not args.all:
         parser.error("Must specify --tenant or --all")
 
-    tenants = [args.tenant] if args.tenant else ["claude-opus", "books", "shared"]
+    tenants = [args.tenant] if args.tenant else ["shared"]  # Add your tenant names here
 
     total = 0
     for tenant in tenants:

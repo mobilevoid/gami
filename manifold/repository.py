@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import json
 
-logger = logging.getLogger("gami.manifold.repository")
+logger = logging.getLogger("manifold.repository")
 
 # Type alias for database connection
 # In production: asyncpg.Connection

@@ -121,7 +121,7 @@ class TestSpecificity:
 
     def test_specific_text_high_score(self):
         """Specific text should score high."""
-        text = "PostgreSQL runs on port 5433 at 192.168.90.231"
+        text = "PostgreSQL runs on port 5432 at db.example.com"
         score = compute_specificity(text)
         assert score >= 0.5
 

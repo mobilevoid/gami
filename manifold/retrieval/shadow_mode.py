@@ -18,7 +18,7 @@ from typing import List, Dict, Any, Optional, Set
 from datetime import datetime
 from enum import Enum
 
-logger = logging.getLogger("gami.manifold.shadow")
+logger = logging.getLogger("manifold.shadow")
 
 
 class ComparisonResult(Enum):

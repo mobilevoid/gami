@@ -22,7 +22,7 @@ import re
 from datetime import datetime, date, timedelta
 from typing import Optional, List, Tuple, Dict, Any
 
-logger = logging.getLogger("gami.manifold.canonical.temporal")
+logger = logging.getLogger("manifold.canonical.temporal")
 
 
 # Year range for normalization (can be adjusted based on corpus)

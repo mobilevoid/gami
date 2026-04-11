@@ -14,7 +14,7 @@ from ..config import get_config
 from ..exceptions import QueryError, query_empty, query_too_long
 from ..metrics import track_classification
 
-logger = logging.getLogger("gami.manifold.mcp.tools")
+logger = logging.getLogger("manifold.mcp.tools")
 
 # Maximum query length
 MAX_QUERY_LENGTH = 2000

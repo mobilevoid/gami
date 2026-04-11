@@ -18,7 +18,7 @@ import logging
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 
-logger = logging.getLogger("gami.manifold.graph.neo4j")
+logger = logging.getLogger("manifold.graph.neo4j")
 
 
 # ---------------------------------------------------------------------------

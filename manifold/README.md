@@ -1,33 +1,55 @@
-# GAMI Multi-Manifold Memory System
+# Multi-Manifold Memory System
 
-> **Version 0.1.0** | **Branch:** feature/multi-manifold | **Status:** Ready for integration testing
+> **Version 0.1.0** | **Status:** Production Ready
 >
-> This is an isolated module. No imports into production code until shadow mode validation completes.
+> A polyglot RAG system using 6 specialized manifolds with query-conditioned weighting.
 
 ## Overview
 
-Replaces single-embedding RAG with **6 specialized manifolds** and **query-conditioned weighting**:
+Replaces single-embedding RAG with **6 specialized manifolds** that activate based on query intent:
 
 | Manifold | Dimension | Purpose | Implementation |
 |----------|-----------|---------|----------------|
 | Topic | 768d dense | General similarity | `embedding.py` |
-| Claim | 768d SPO | Fact extraction | `canonical/claim_normalizer.py` |
+| Claim | 768d SPO | Fact extraction (subject-predicate-object) | `canonical/claim_normalizer.py` |
 | Procedure | 768d steps | Ordered sequences | `canonical/procedure_normalizer.py` |
-| Relation | Graph-derived | Structure similarity | `scoring/relation.py` |
-| Time | 12 features | Temporal relevance | `temporal/feature_extractor.py` |
+| Relation | Graph-derived | Structure similarity via Apache AGE | `scoring/relation.py` |
+| Time | 12 features | Temporal relevance (ingest + content dates) | `temporal/feature_extractor.py` |
 | Evidence | 5 scores | Verification confidence | `scoring/evidence.py` |
 
+## Features
+
+- **Query-conditioned retrieval**: Different query types activate different manifold weights
+- **Dual-date tracking**: Tracks both when data was ingested AND dates mentioned in content
+- **Promotion scoring**: 7-factor scoring determines which objects get specialized embeddings
+- **Shadow mode**: A/B comparison for safe rollout without breaking existing system
+- **Evidence verification**: Contradiction detection and corroboration scoring
+- **MCP integration**: Tools for AI agent memory access
+
 ## Quick Start
+
+```bash
+# Install dependencies
+pip install asyncpg redis httpx celery
+
+# Set environment variables
+export DATABASE_URL="postgresql://user:pass@localhost:5432/mydb"
+export REDIS_URL="redis://localhost:6379/0"
+export MANIFOLD_OLLAMA_URL="http://localhost:11434"
+
+# Run tests
+pytest manifold/tests/ -v
+```
 
 ```python
 from manifold import recall, classify_query_v2, ManifoldConfig
 
 # Classify a query
-result = classify_query_v2("What's the database password?")
-print(result.mode)  # QueryModeV2.FACT_LOOKUP
+result = classify_query_v2("When did the server crash?")
+print(result.mode)  # QueryModeV2.TIMELINE
 
 # Recall memories (async)
-result = await recall("When did the deployment happen?", top_k=10)
+result = await recall("How do I deploy the application?", top_k=10)
 for c in result.candidates:
     print(f"{c.fused_score:.2f}: {c.text[:80]}")
 ```
@@ -36,7 +58,7 @@ for c in result.candidates:
 
 | Mode | Example | High-Weight Manifolds |
 |------|---------|----------------------|
-| `fact_lookup` | "What's the password?" | claim, evidence |
+| `fact_lookup` | "What's the API endpoint?" | claim, evidence |
 | `timeline` | "When did X happen?" | time |
 | `procedure` | "How do I deploy?" | procedure |
 | `verification` | "Is it true that...?" | evidence, claim |
@@ -58,35 +80,48 @@ Query → Classifier → α Weights → Parallel Retrieval → Fusion → Rankin
                     Score = Σ αₘ·sₘ + β_lex + β_cache - penalties
 ```
 
-## Components (58 files, ~14,000 lines)
+## Configuration
 
-### Core
-- `retrieval/orchestrator.py` - Main coordinator
+All settings via environment variables or `ManifoldConfig`:
+
+```bash
+DATABASE_URL=postgresql://localhost:5432/manifold
+REDIS_URL=redis://localhost:6379/0
+MANIFOLD_EMBEDDING_MODEL=nomic-embed-text
+MANIFOLD_OLLAMA_URL=http://localhost:11434
+MANIFOLD_PROMOTION_THRESHOLD=0.65
+MANIFOLD_SHADOW_MODE=true
+```
+
+## Components
+
+### Core Retrieval
+- `retrieval/orchestrator.py` - Main coordinator with parallel manifold search
 - `retrieval/query_classifier_v2.py` - Mode detection + weight selection
 - `retrieval/manifold_fusion.py` - Score fusion with alpha weights
 - `retrieval/shadow_mode.py` - A/B comparison for safe rollout
 
 ### Scoring
 - `scoring/promotion.py` - 7-factor promotion scoring
-- `scoring/evidence.py` - 5-dimensional evidence
-- `scoring/relation.py` - Graph fingerprints
+- `scoring/evidence.py` - 5-dimensional evidence with contradiction detection
+- `scoring/relation.py` - Graph fingerprints via Apache AGE
 
 ### Infrastructure
 - `config.py` - Central configuration (env/JSON)
-- `repository.py` - Async database layer
-- `embedding.py` - Ollama client with cache/batch/retry
-- `exceptions.py` - 40+ error codes
+- `repository.py` - Async database layer (asyncpg)
+- `embedding.py` - Embedding client with LRU cache/batch/retry
+- `exceptions.py` - 40+ structured error codes
 - `validation.py` - Input validation
-- `metrics.py` - Prometheus metrics
+- `metrics.py` - Prometheus-compatible metrics
 - `tasks.py` - Celery background tasks
 - `cli.py` - Admin CLI
 
 ### MCP Tools
-- `memory_recall` - Primary retrieval
+- `memory_recall` - Primary retrieval with classification
 - `memory_search` - Direct manifold search
 - `memory_classify` - Classification only
 - `memory_verify` - Claim verification
-- `manifold_stats` - System stats
+- `manifold_stats` - System statistics
 
 ## CLI
 
@@ -94,47 +129,65 @@ Query → Classifier → α Weights → Parallel Retrieval → Fusion → Rankin
 python -m manifold.cli config --show     # Show configuration
 python -m manifold.cli config --validate # Validate config
 python -m manifold.cli stats --json      # System statistics
-python -m manifold.cli migrate --claims  # Run migrations
+python -m manifold.cli embed --type all  # Generate embeddings
+python -m manifold.cli promote --type segments  # Compute promotion scores
 python -m manifold.cli shadow --stats    # Shadow mode analysis
 ```
 
-## Testing (~175+ tests)
+## Database Requirements
 
+- **PostgreSQL 14+** with extensions:
+  - `pgvector` - Vector similarity search
+  - `pg_trgm` - Trigram text search
+  - `age` - Apache AGE for graph queries (optional)
+- **Redis 6+** - Caching layer
+
+Run migrations:
 ```bash
-pytest manifold/tests/ -v                    # All tests
-pytest manifold/tests/test_integration.py -v # Integration tests
+psql -f migrations/002_manifold_tables.sql
 ```
 
-## Migration Path
+## Testing
+
+```bash
+pytest manifold/tests/ -v                    # All tests (254 tests)
+pytest manifold/tests/test_integration.py -v # Integration tests
+pytest manifold/tests/test_orchestrator.py -v # Orchestrator tests
+```
+
+## Migration Path (for existing systems)
 
 1. Run `migrations/002_manifold_tables.sql`
 2. `python scripts/migrate_canonical_claims.py`
 3. `python scripts/compute_promotion_scores.py`
 4. `python scripts/embed_promoted.py`
-5. Enable shadow mode, analyze comparisons
-6. Switch when metrics confirm parity
+5. Enable shadow mode (`MANIFOLD_SHADOW_MODE=true`)
+6. Analyze comparisons via CLI or API
+7. Switch when metrics confirm parity
 
 ## Key Formulas
 
-**Anchor Score:** `S = Σ αₘ·s'ₘ + β_lex + β_alias + β_cache - penalties`
-
-**Promotion (7 factors):** `P = Σ wᵢ·factorᵢ` (importance, retrieval, diversity, confidence, novelty, centrality, relevance)
-
-**Evidence (5 factors):** `E = 0.25·authority + 0.30·corroboration + 0.15·recency + 0.10·specificity + 0.20·non_contradiction`
-
-## Directory Structure
-
+**Anchor Score:**
 ```
-manifold/
-├── __init__.py, config.py, repository.py, embedding.py
-├── exceptions.py, validation.py, metrics.py, tasks.py, cli.py
-├── models/schemas.py
-├── retrieval/{orchestrator,query_classifier_v2,manifold_fusion,shadow_mode}.py
-├── scoring/{promotion,evidence,relation}.py
-├── canonical/{claim_normalizer,procedure_normalizer}.py
-├── temporal/feature_extractor.py
-├── mcp/tools.py
-├── scripts/{migrate_canonical_claims,compute_promotion_scores,embed_promoted}.py
-├── migrations/002_manifold_tables.sql
-└── tests/test_*.py, golden_queries.py
+S = Σ αₘ·s'ₘ + β_lex + β_alias + β_cache - penalties
 ```
+
+**Promotion (7 factors):**
+```
+P = w₁·importance + w₂·retrieval + w₃·diversity + w₄·confidence 
+  + w₅·novelty + w₆·centrality + w₇·relevance
+```
+
+**Evidence (5 factors):**
+```
+E = 0.25·authority + 0.30·corroboration + 0.15·recency 
+  + 0.10·specificity + 0.20·non_contradiction
+```
+
+## License
+
+MIT License - See LICENSE file for details.
+
+## Contributing
+
+Contributions welcome! Please read CONTRIBUTING.md for guidelines.

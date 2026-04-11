@@ -10,7 +10,7 @@ import logging
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
-logger = logging.getLogger("gami.manifold.tasks")
+logger = logging.getLogger("manifold.tasks")
 
 # Celery app import - would be from workers.celery_app in production
 # For isolated module, we define task stubs
@@ -55,7 +55,7 @@ def embed_objects_batch(
     from .config import get_config
 
     config = get_config()
-    db_url = db_url or f"postgresql://gami:gami@localhost:5433/gami"
+    db_url = db_url or config.database_url
     ollama_url = ollama_url or config.ollama_url
 
     logger.info(
@@ -174,7 +174,7 @@ def extract_canonical_claims(
     from .canonical.claim_normalizer import ClaimNormalizer
 
     config = get_config()
-    db_url = db_url or f"postgresql://gami:gami@localhost:5433/gami"
+    db_url = db_url or config.database_url
 
     logger.info(f"Extracting claims from {len(segment_ids)} segments")
 
@@ -296,7 +296,7 @@ def extract_canonical_procedures(
     from .canonical.procedure_normalizer import ProcedureNormalizer
 
     config = get_config()
-    db_url = db_url or f"postgresql://gami:gami@localhost:5433/gami"
+    db_url = db_url or config.database_url
 
     logger.info(f"Extracting procedures from {len(segment_ids)} segments")
 
@@ -432,7 +432,7 @@ def compute_promotion_scores_batch(
     from .scoring.promotion import compute_promotion_score, PromotionFactors
 
     config = get_config()
-    db_url = db_url or f"postgresql://gami:gami@localhost:5433/gami"
+    db_url = db_url or config.database_url
     promotion_threshold = promotion_threshold or config.promotion_threshold
 
     logger.info(f"Computing promotion scores for {len(object_ids)} {object_type}s")
@@ -590,7 +590,7 @@ def extract_temporal_features_batch(
     from .temporal.feature_extractor import TemporalExtractor
 
     config = get_config()
-    db_url = db_url or f"postgresql://gami:gami@localhost:5433/gami"
+    db_url = db_url or config.database_url
 
     logger.info(f"Extracting temporal features for {len(object_ids)} {object_type}s")
 
@@ -758,7 +758,7 @@ def analyze_shadow_comparisons(
     from .retrieval.shadow_mode import ShadowAnalyzer, ShadowStats
 
     config = get_config()
-    db_url = db_url or f"postgresql://gami:gami@localhost:5433/gami"
+    db_url = db_url or config.database_url
 
     logger.info(f"Analyzing shadow comparisons from last {since_hours} hours")
 
@@ -920,7 +920,7 @@ def rebuild_graph_fingerprints(
     from .config import get_config
 
     config = get_config()
-    db_url = db_url or f"postgresql://gami:gami@localhost:5433/gami"
+    db_url = db_url or config.database_url
 
     logger.info(f"Rebuilding graph fingerprints (type={entity_type})")
 
@@ -966,9 +966,9 @@ def rebuild_graph_fingerprints(
                             # Query AGE graph for entity neighborhood
                             # Using Cypher to get 2-hop neighborhood structure
                             cypher_result = await conn.fetch(
-                                """
-                                SELECT * FROM cypher('gami_graph', $$
-                                    MATCH (e:Entity {id: $entity_id})
+                                f"""
+                                SELECT * FROM cypher('{config.graph_name}', $$
+                                    MATCH (e:Entity {{id: $entity_id}})
                                     OPTIONAL MATCH (e)-[r1]->(n1)
                                     OPTIONAL MATCH (e)<-[r2]-(n2)
                                     OPTIONAL MATCH (e)-[r3]->(m1)-[r4]->(n3)
@@ -1103,7 +1103,7 @@ def warm_query_cache(
     from .config import get_config
 
     config = get_config()
-    db_url = db_url or f"postgresql://gami:gami@localhost:5433/gami"
+    db_url = db_url or config.database_url
     redis_url = redis_url or config.redis_url
 
     logger.info(f"Warming cache for tenant {tenant_id} with top {query_count} queries")

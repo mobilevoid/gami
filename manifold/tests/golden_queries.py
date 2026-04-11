@@ -110,7 +110,7 @@ GOLDEN_QUERIES = [
 
     # --- PROCEDURE queries ---
     GoldenQuery(
-        query="How do I deploy GAMI to production?",
+        query="How do I deploy the application to production?",
         expected_mode=QueryModeV2.PROCEDURE,
         min_confidence=0.8,
         high_manifolds=["procedure"],
@@ -180,7 +180,7 @@ GOLDEN_QUERIES = [
 
     # --- SYNTHESIS queries ---
     GoldenQuery(
-        query="Summarize the architecture of GAMI",
+        query="Summarize the architecture of the application",
         expected_mode=QueryModeV2.SYNTHESIS,
         min_confidence=0.7,
         high_manifolds=["topic"],

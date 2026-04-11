@@ -8,7 +8,7 @@ These models define the database schema for:
 - Query logs (for retrieval frequency tracking)
 - Shadow comparisons (A/B testing new vs old retrieval)
 
-WARNING: These models are NOT connected to the running GAMI system.
+WARNING: These models are NOT connected to the running the application system.
 The tables do not exist until migrations are explicitly run.
 """
 from datetime import datetime
@@ -33,7 +33,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import declarative_base, relationship
 
-# Use a separate Base to avoid any connection to existing GAMI models
+# Use a separate Base to avoid any connection to existing the application models
 ManifoldBase = declarative_base()
 
 
@@ -157,10 +157,10 @@ class CanonicalProcedure(ManifoldBase):
     """Structured form of procedures for the procedure manifold.
 
     Extracts instructional content into structured form:
-    - title: "Deploy GAMI to Production"
+    - title: "Deploy the application to Production"
     - prerequisites: ["PostgreSQL 16", "Redis 7"]
     - steps: [{"order": 1, "text": "Run migrations"}, ...]
-    - expected_outcome: "GAMI accessible on :9000"
+    - expected_outcome: "the application accessible on :9000"
     """
     __tablename__ = "canonical_procedures"
 

@@ -49,13 +49,10 @@ OBJECT_TYPES = ["segments", "claims", "entities", "summaries"]
 
 async def get_db_connection():
     """Get database connection."""
-    return await asyncpg.connect(
-        host=os.environ.get("GAMI_DB_HOST", "localhost"),
-        port=int(os.environ.get("GAMI_DB_PORT", "5433")),
-        user=os.environ.get("GAMI_DB_USER", "gami"),
-        password=os.environ.get("GAMI_DB_PASSWORD", ""),
-        database=os.environ.get("GAMI_DB_NAME", "gami"),
-    )
+    from manifold.config import get_config
+    config = get_config()
+    db_url = os.environ.get("DATABASE_URL", config.database_url)
+    return await asyncpg.connect(db_url)
 
 
 async def get_total_sources(conn) -> int:
