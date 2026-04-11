@@ -1,0 +1,29 @@
+[Unit]
+Description=GAMI Subconscious Daemon (Proactive Context Management)
+After=network.target postgresql@16-main.service redis-server.service gami-api.service
+Wants=gami-api.service redis-server.service
+
+[Service]
+Type=simple
+User=ai
+Group=ai
+WorkingDirectory=/opt/gami
+Environment=PYTHONPATH=/opt/gami
+EnvironmentFile=/opt/gami/.env
+Environment=MANIFOLD_SUBCONSCIOUS_ENABLED=true
+ExecStart=/usr/local/anaconda3/bin/python -m daemon.subconscious
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gami-subconscious
+
+# Resource limits
+MemoryMax=2G
+CPUQuota=50%
+
+# Watchdog
+WatchdogSec=60
+
+[Install]
+WantedBy=multi-user.target

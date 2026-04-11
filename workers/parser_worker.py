@@ -96,6 +96,43 @@ def parse_source(
             parsed_segments=parse_result.segments,
         )
 
+        # Embed segments inline (CPU) - batches of 32 for memory efficiency
+        if segment_ids:
+            from api.llm.embeddings import embed_texts_batch
+
+            EMBED_BATCH_SIZE = 32
+            texts = [seg.text for seg in parse_result.segments]
+
+            logger.info("Embedding %d segments inline (CPU)...", len(texts))
+
+            for batch_start in range(0, len(texts), EMBED_BATCH_SIZE):
+                batch_end = min(batch_start + EMBED_BATCH_SIZE, len(texts))
+                batch_texts = texts[batch_start:batch_end]
+                batch_ids = segment_ids[batch_start:batch_end]
+
+                try:
+                    embeddings = embed_texts_batch(batch_texts)
+
+                    # Update segments with embeddings
+                    for seg_id, emb in zip(batch_ids, embeddings):
+                        emb_str = "[" + ",".join(str(x) for x in emb) + "]"
+                        db.execute(
+                            text(
+                                "UPDATE segments SET embedding = :emb::vector "
+                                "WHERE segment_id = :sid"
+                            ),
+                            {"emb": emb_str, "sid": seg_id},
+                        )
+                    db.commit()
+                except Exception as emb_exc:
+                    logger.warning(
+                        "Embedding batch %d-%d failed (will retry in background): %s",
+                        batch_start, batch_end, emb_exc
+                    )
+                    # Continue - background embed task can pick up later
+
+            logger.info("Embedded %d segments for source %s", len(segment_ids), source_id)
+
         # Update source to parsed
         db.execute(
             text(

@@ -46,6 +46,13 @@ celery_app.conf.update(
             "task": "gami.detect_contradictions",
             "schedule": 86400.0,
         },
+        # Embedding backfill every 15 minutes - catches any segments
+        # that failed inline embedding during ingestion
+        "embedding-backfill-15m": {
+            "task": "gami.embed_segments",
+            "schedule": 900.0,  # 15 minutes
+            "kwargs": {"batch_size": 100},
+        },
     },
     # Concurrency limit for extract queue (don't overwhelm vLLM)
     worker_concurrency=2,
