@@ -36,6 +36,29 @@ class TemporalGranularity(Enum):
 
 
 @dataclass
+class TemporalMetadata:
+    """Rich temporal metadata for dual-date tracking.
+
+    Stores both:
+    - ingest_time: When the data was added to GAMI
+    - content_times: Dates mentioned within the content itself
+
+    This allows searching by either "when was this ingested" or
+    "what dates does this content reference".
+    """
+    ingest_time: Optional[datetime] = None
+    content_times: List[datetime] = None  # All dates extracted from content
+    primary_content_time: Optional[datetime] = None  # Most relevant date in content
+    time_range_start: Optional[datetime] = None  # Earliest date referenced
+    time_range_end: Optional[datetime] = None  # Latest date referenced
+    temporal_type: str = "unknown"  # event, duration, deadline, recurring, etc.
+
+    def __post_init__(self):
+        if self.content_times is None:
+            self.content_times = []
+
+
+@dataclass
 class TemporalFeatures:
     """12-dimensional temporal feature vector."""
     absolute_timestamp: float = 0.0
@@ -314,6 +337,144 @@ class TemporalExtractor:
             or self.PATTERNS["date_mdy"].search(text)
             or self.PATTERNS["date_dmy"].search(text)
         )
+
+    def extract_all_dates(self, text: str) -> List[datetime]:
+        """Extract ALL dates mentioned in the text.
+
+        Useful for finding content that references specific dates,
+        regardless of when it was ingested.
+
+        Args:
+            text: The text to analyze.
+
+        Returns:
+            List of datetime objects for all dates found.
+        """
+        dates = []
+
+        # ISO datetime (2023-04-15T10:30:00)
+        for match in self.PATTERNS["iso_datetime"].finditer(text):
+            try:
+                dt_str = match.group().replace(" ", "T")
+                if len(dt_str) == 16:
+                    dt_str += ":00"
+                dates.append(datetime.fromisoformat(dt_str))
+            except ValueError:
+                pass
+
+        # ISO date (2023-04-15)
+        for match in self.PATTERNS["iso_date"].finditer(text):
+            try:
+                dates.append(datetime.strptime(match.group(), "%Y-%m-%d"))
+            except ValueError:
+                pass
+
+        # MDY format (April 15, 2023)
+        for match in self.PATTERNS["date_mdy"].finditer(text):
+            try:
+                # Handle with/without comma
+                dt_str = match.group().replace(",", "")
+                for fmt in ["%B %d %Y", "%b %d %Y"]:
+                    try:
+                        dates.append(datetime.strptime(dt_str, fmt))
+                        break
+                    except ValueError:
+                        continue
+            except ValueError:
+                pass
+
+        # DMY format (15th April 2023)
+        for match in self.PATTERNS["date_dmy"].finditer(text):
+            try:
+                dt_str = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', match.group())
+                for fmt in ["%d %B %Y", "%d %b %Y"]:
+                    try:
+                        dates.append(datetime.strptime(dt_str, fmt))
+                        break
+                    except ValueError:
+                        continue
+            except ValueError:
+                pass
+
+        return sorted(set(dates))
+
+    def extract_with_metadata(
+        self,
+        text: str,
+        ingest_time: Optional[datetime] = None,
+        timestamp: Optional[datetime] = None,
+        **kwargs,
+    ) -> Tuple[TemporalFeatures, TemporalMetadata]:
+        """Extract both features and rich metadata.
+
+        This is the preferred method when you need both:
+        - The 12-dimensional feature vector for similarity search
+        - Rich metadata for filtering by ingest date or content dates
+
+        Args:
+            text: The text to analyze.
+            ingest_time: When this content was added to GAMI.
+            timestamp: Known timestamp of the content (if available).
+            **kwargs: Additional args passed to extract().
+
+        Returns:
+            Tuple of (TemporalFeatures, TemporalMetadata)
+        """
+        # Extract features
+        features = self.extract(text, timestamp=timestamp, **kwargs)
+
+        # Extract all dates from content
+        content_dates = self.extract_all_dates(text)
+
+        # Determine primary content time
+        primary_content_time = timestamp
+        if not primary_content_time and content_dates:
+            # Use the most recent date as primary
+            primary_content_time = max(content_dates)
+
+        # Determine time range
+        time_range_start = min(content_dates) if content_dates else None
+        time_range_end = max(content_dates) if content_dates else None
+
+        # Detect temporal type based on patterns
+        temporal_type = self._detect_temporal_type(text)
+
+        metadata = TemporalMetadata(
+            ingest_time=ingest_time or datetime.now(),
+            content_times=content_dates,
+            primary_content_time=primary_content_time,
+            time_range_start=time_range_start,
+            time_range_end=time_range_end,
+            temporal_type=temporal_type,
+        )
+
+        return features, metadata
+
+    def _detect_temporal_type(self, text: str) -> str:
+        """Detect the type of temporal reference."""
+        text_lower = text.lower()
+
+        # Check for deadlines
+        if any(w in text_lower for w in ["deadline", "due by", "due date", "must be done by", "expires"]):
+            return "deadline"
+
+        # Check for recurring events
+        if any(w in text_lower for w in ["every day", "weekly", "monthly", "daily", "each week", "recurring"]):
+            return "recurring"
+
+        # Check for durations/periods
+        if self.PATTERNS["duration"].search(text):
+            return "duration"
+
+        # Check for specific events
+        if any(w in text_lower for w in ["meeting", "event", "appointment", "scheduled", "at "]):
+            return "event"
+
+        # Check for historical reference
+        if self.PATTERNS["ago"].search(text):
+            return "historical"
+
+        return "reference"
 
 
 def compute_temporal_similarity(

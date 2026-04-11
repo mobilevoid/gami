@@ -640,11 +640,13 @@ def extract_temporal_features_batch(
 
                         text = row["text"] or ""
                         timestamp = row["timestamp"]
+                        ingest_time = timestamp  # Use created_at as ingest time
 
-                        # Extract temporal features (12-dimensional)
-                        features = extractor.extract(
+                        # Extract temporal features AND metadata (both ingest and content dates)
+                        features, metadata = extractor.extract_with_metadata(
                             text=text,
-                            reference_time=timestamp,
+                            ingest_time=ingest_time,
+                            timestamp=timestamp,
                         )
 
                         if not features:
@@ -652,23 +654,39 @@ def extract_temporal_features_batch(
                             continue
 
                         # Convert features to storable format
-                        feature_vector = features.to_vector()
-                        feature_dict = features.to_dict()
+                        feature_vector = features.to_list()
 
-                        # Store temporal features
+                        # Build feature dict from dataclass
+                        feature_dict = {
+                            "absolute_timestamp": features.absolute_timestamp,
+                            "relative_recency": features.relative_recency,
+                            "hour_sin": features.hour_sin,
+                            "hour_cos": features.hour_cos,
+                            "dow_sin": features.dow_sin,
+                            "dow_cos": features.dow_cos,
+                            "is_business_hours": features.is_business_hours,
+                            "temporal_specificity": features.temporal_specificity,
+                            "duration_seconds": features.duration_seconds,
+                            "sequence_position": features.sequence_position,
+                            "has_explicit_date": features.has_explicit_date,
+                            "temporal_distance": features.temporal_distance,
+                        }
+
+                        # Store temporal features with both ingest and content dates
                         await conn.execute(
                             """
                             INSERT INTO temporal_features (
                                 object_id, object_type, tenant_id,
                                 feature_vector, features_json,
-                                reference_time, extracted_times,
+                                ingest_time, reference_time, extracted_times,
                                 time_range_start, time_range_end,
                                 temporal_type, confidence,
                                 created_at
-                            ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, $8, $9, $10, $11, NOW())
+                            ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10, $11, $12, NOW())
                             ON CONFLICT (object_id) DO UPDATE SET
                                 feature_vector = EXCLUDED.feature_vector,
                                 features_json = EXCLUDED.features_json,
+                                ingest_time = EXCLUDED.ingest_time,
                                 reference_time = EXCLUDED.reference_time,
                                 extracted_times = EXCLUDED.extracted_times,
                                 time_range_start = EXCLUDED.time_range_start,
@@ -682,12 +700,13 @@ def extract_temporal_features_batch(
                             row["tenant_id"],
                             feature_vector,
                             json.dumps(feature_dict),
-                            timestamp,
-                            json.dumps([t.isoformat() if hasattr(t, 'isoformat') else str(t) for t in features.extracted_times]) if features.extracted_times else None,
-                            features.time_range_start,
-                            features.time_range_end,
-                            features.temporal_type,
-                            features.confidence,
+                            metadata.ingest_time,
+                            metadata.primary_content_time,
+                            json.dumps([t.isoformat() for t in metadata.content_times]) if metadata.content_times else None,
+                            metadata.time_range_start,
+                            metadata.time_range_end,
+                            metadata.temporal_type,
+                            features.temporal_specificity,  # Use specificity as confidence proxy
                         )
 
                         features_stored.append({
