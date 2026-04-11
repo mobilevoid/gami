@@ -371,7 +371,7 @@ class ManifoldTools:
 
         # Normalize the claim to canonical SPO form for comparison
         normalizer = ClaimNormalizer()
-        canonical_claim = normalizer.normalize_text(claim.strip())
+        canonical_claim = normalizer.normalize(claim.strip())
 
         # Retrieve evidence using verification mode
         result = await self.orchestrator.recall(
@@ -495,6 +495,10 @@ class ManifoldTools:
         stats = {
             "tenant_id": tenant_id,
             "generated_at": datetime.now(timezone.utc).isoformat(),
+            "embeddings": {},
+            "promoted_objects": 0,
+            "canonical_claims": 0,
+            "canonical_procedures": 0,
         }
 
         # Database stats

@@ -87,6 +87,7 @@ class ManifoldConfig:
     shadow_sample_rate: float = 0.1  # Fraction of queries to shadow
 
     # === Cache Settings ===
+    redis_url: str = "redis://localhost:6380/0"
     query_cache_ttl_seconds: int = 300
     embedding_cache_ttl_seconds: int = 3600
 

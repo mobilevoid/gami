@@ -25,7 +25,7 @@ from ..models.schemas import (
     ALPHA_WEIGHTS,
 )
 from ..config import get_config
-from .query_classifier_v2 import classify_query_v2, QueryClassification
+from .query_classifier_v2 import classify_query_v2, QueryClassificationV2
 from .manifold_fusion import ManifoldFusion, percentile_normalize
 
 logger = logging.getLogger("gami.manifold.orchestrator")
@@ -177,7 +177,7 @@ class RetrievalOrchestrator:
     async def _parallel_anchor_retrieval(
         self,
         query: str,
-        classification: QueryClassification,
+        classification: QueryClassificationV2,
         fetch_k: int,
         tenant_id: str,
     ) -> List[RetrievalCandidate]:
