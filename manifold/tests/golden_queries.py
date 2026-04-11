@@ -114,7 +114,7 @@ GOLDEN_QUERIES = [
         expected_mode=QueryModeV2.PROCEDURE,
         min_confidence=0.8,
         high_manifolds=["procedure"],
-        expected_keywords=["deploy", "gami", "production"],
+        expected_keywords=["deploy", "production", "production"],
         description="Deployment procedure",
     ),
     GoldenQuery(
@@ -184,7 +184,7 @@ GOLDEN_QUERIES = [
         expected_mode=QueryModeV2.SYNTHESIS,
         min_confidence=0.7,
         high_manifolds=["topic"],
-        expected_keywords=["gami", "architecture"],
+        expected_keywords=["production", "architecture"],
         description="Architecture summary",
     ),
     GoldenQuery(

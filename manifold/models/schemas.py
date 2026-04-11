@@ -305,7 +305,7 @@ class AnchorCandidate(BaseModel):
 class RecallRequestV2(BaseModel):
     """Request schema for manifold-aware recall."""
     query: str
-    tenant_id: str = "claude-opus"
+    tenant_id: str = "default"
     tenant_ids: Optional[List[str]] = None
     max_tokens: int = Field(default=2000, ge=100, le=16000)
     mode: QueryModeV2 = QueryModeV2.AUTO

@@ -55,7 +55,7 @@ This document specifies the complete migration path from GAMI's current single-e
 │  │   └── Single embedding column per table (768d nomic)         │
 │  │                                                              │
 │  └── Apache AGE Extension                                       │
-│      └── gami_graph (entities, relations, paths)                │
+│      └── manifold_graph (entities, relations, paths)                │
 │                                                                  │
 │  Redis 6380                                                      │
 │  └── Hot cache (query anchors, neighborhoods, session state)    │
@@ -93,7 +93,7 @@ effective_score = score * importance * recency_factor * type_boost
 
 ### 1.3 Current Scale (as of 2026-04-10)
 
-| Metric | books tenant | claude-opus tenant | Total |
+| Metric | books tenant | example-tenant tenant | Total |
 |--------|-------------|-------------------|-------|
 | Segments | 260,690 | ~50,000 | ~320,000 |
 | Entities | 89,000+ | ~15,000 | ~105,000 |
@@ -631,7 +631,7 @@ MANIFOLD_TOOLS = {
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Query text"},
-                "tenant_id": {"type": "string", "default": "claude-opus"},
+                "tenant_id": {"type": "string", "default": "example-tenant"},
                 "tenant_ids": {"type": "array", "items": {"type": "string"}},
                 "max_tokens": {"type": "integer", "default": 2000},
                 "mode": {
@@ -682,7 +682,7 @@ MANIFOLD_TOOLS = {
             "type": "object",
             "properties": {
                 "query": {"type": "string"},
-                "tenant_id": {"type": "string", "default": "claude-opus"},
+                "tenant_id": {"type": "string", "default": "example-tenant"},
             },
             "required": ["query"],
         },
@@ -791,7 +791,7 @@ Every migration step has a rollback:
 Apache AGE is integrated into PostgreSQL 5433. Graph queries use a hybrid SQL + Cypher syntax:
 
 ```sql
-SELECT * FROM cypher('gami_graph', $$
+SELECT * FROM cypher('manifold_graph', $$
     MATCH (e:Entity)-[:MENTIONS]->(s:Segment)
     WHERE e.id = $1
     RETURN s

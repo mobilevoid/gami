@@ -1,7 +1,7 @@
-# GAMI Multi-Manifold Memory System
+# Multi-Manifold Memory System
 # NOT FOR PRODUCTION USE - See ROADMAP.md
 """
-Multi-manifold memory system for GAMI.
+Multi-manifold memory system for semantic retrieval.
 
 This module provides semantic retrieval across 6 manifolds:
 - Topic: Dense 768d embeddings for general similarity

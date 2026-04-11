@@ -75,7 +75,7 @@ class TestClaimNormalizer:
 
     def test_canonical_text_generation(self):
         """Test canonical text format."""
-        claim = normalize_claim("GAMI is a memory system")
+        claim = normalize_claim("Manifold is a memory system")
         assert claim is not None
         canonical = claim.to_canonical_text()
         assert "[" in canonical
@@ -88,7 +88,7 @@ class TestProcedureNormalizer:
 
     def test_numbered_list_extraction(self):
         """Test extraction from numbered list."""
-        text = """How to deploy GAMI:
+        text = """How to deploy the application:
         1. Run the migrations
         2. Start the API server
         3. Verify the health endpoint
@@ -126,10 +126,10 @@ class TestProcedureNormalizer:
     def test_canonical_text_generation(self):
         """Test canonical text format."""
         proc = CanonicalProcedureForm.from_steps(
-            title="Deploy GAMI",
+            title="Deploy Application",
             steps=["Run migrations", "Start API"],
             prerequisites=["PostgreSQL"],
-            outcome="GAMI running",
+            outcome="Application running",
         )
         canonical = proc.to_text()
         assert "title=" in canonical
@@ -209,7 +209,7 @@ class TestCanonicalForms:
     def test_procedure_form_creation(self):
         """Test creating a procedure form."""
         form = create_procedure_form(
-            title="Install GAMI",
+            title="Install Application",
             steps=["Download", "Configure", "Run"],
         )
         assert len(form.steps) == 3

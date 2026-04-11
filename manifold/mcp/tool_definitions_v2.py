@@ -32,7 +32,7 @@ MANIFOLD_TOOL_DEFINITIONS = {
                 "tenant_id": {
                     "type": "string",
                     "description": "Tenant ID to search within",
-                    "default": "claude-opus",
+                    "default": "default",
                 },
                 "tenant_ids": {
                     "type": "array",
@@ -94,7 +94,7 @@ MANIFOLD_TOOL_DEFINITIONS = {
                 "tenant_id": {
                     "type": "string",
                     "description": "Tenant ID",
-                    "default": "claude-opus",
+                    "default": "default",
                 },
                 "tenant_ids": {
                     "type": "array",
@@ -167,7 +167,7 @@ MANIFOLD_TOOL_DEFINITIONS = {
                 "tenant_id": {
                     "type": "string",
                     "description": "Tenant context",
-                    "default": "claude-opus",
+                    "default": "default",
                 },
             },
             "required": ["query"],

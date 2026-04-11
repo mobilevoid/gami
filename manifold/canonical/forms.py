@@ -68,10 +68,10 @@ class CanonicalProcedureForm:
         title=[...] | prerequisites=[...] | steps=[...] | outcome=[...]
 
     Example:
-        title=[Deploy GAMI to Production] |
+        title=[Deploy Application to Production] |
         prerequisites=[PostgreSQL 16, Redis 7, Python 3.11] |
         steps=[1. Run migrations; 2. Start API; 3. Verify health] |
-        outcome=[GAMI accessible on :9000]
+        outcome=[Application accessible on :9000]
     """
     title: str
     prerequisites: List[str] = field(default_factory=list)
@@ -124,7 +124,7 @@ class CanonicalEntityForm:
 
     Example:
         entity=[PostgreSQL] | type=[technology] |
-        relations=[hosts: GAMI, used_by: CT231, version: 16]
+        relations=[hosts: Manifold, used_by: server-01, version: 16]
     """
     name: str
     entity_type: str

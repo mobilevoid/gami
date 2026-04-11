@@ -44,7 +44,7 @@ class TestQueryClassification:
 
     def test_procedure_howto(self):
         """'How to' queries should be procedure."""
-        result = classify_query_v2("How do I deploy GAMI to production?")
+        result = classify_query_v2("How do I deploy the application to production?")
         assert result.mode == QueryModeV2.PROCEDURE
         assert result.manifold_weights.procedure >= 0.4
 
@@ -72,7 +72,7 @@ class TestQueryClassification:
 
     def test_synthesis_summarize(self):
         """'Summarize' queries should be synthesis."""
-        result = classify_query_v2("Summarize the architecture of GAMI")
+        result = classify_query_v2("Summarize the architecture of the system")
         assert result.mode == QueryModeV2.SYNTHESIS
 
     def test_report_comprehensive(self):
@@ -146,7 +146,7 @@ class TestExplainClassification:
 
     def test_explain_returns_dict(self):
         """Explain should return a dict with required keys."""
-        result = explain_classification("How to deploy GAMI?")
+        result = explain_classification("How to deploy the application?")
         assert "query" in result
         assert "mode" in result
         assert "confidence" in result

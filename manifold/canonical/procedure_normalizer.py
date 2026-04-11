@@ -1,11 +1,11 @@
 """Procedure normalizer — extracts structured procedures from text.
 
 Takes instructional content like:
-    "To deploy GAMI, first run the migrations, then start the API server,
+    "To deploy the app, first run the migrations, then start the API server,
      and finally verify the health endpoint."
 
 And converts to structured form:
-    title: "Deploy GAMI"
+    title: "Deploy the app"
     prerequisites: []
     steps: [
         {"order": 1, "text": "run the migrations"},

@@ -261,7 +261,7 @@ def retrieve_anchors(
     retriever = AnchorRetriever()
     return retriever.retrieve(
         query,
-        tenant_ids or ["claude-opus", "shared"],
+        tenant_ids or ["default", "shared"],
         mode,
         limit=limit,
     )

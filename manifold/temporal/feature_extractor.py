@@ -40,7 +40,7 @@ class TemporalMetadata:
     """Rich temporal metadata for dual-date tracking.
 
     Stores both:
-    - ingest_time: When the data was added to GAMI
+    - ingest_time: When the data was added to the system
     - content_times: Dates mentioned within the content itself
 
     This allows searching by either "when was this ingested" or
@@ -413,7 +413,7 @@ class TemporalExtractor:
 
         Args:
             text: The text to analyze.
-            ingest_time: When this content was added to GAMI.
+            ingest_time: When this content was added to the system.
             timestamp: Known timestamp of the content (if available).
             **kwargs: Additional args passed to extract().
 

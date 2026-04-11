@@ -397,8 +397,9 @@ class RetrievalOrchestrator:
 
             # Query AGE graph for related entities
             # First, find entities mentioned in query
-            cypher_query = """
-                SELECT * FROM cypher('gami', $$
+            config = get_config()
+            cypher_query = f"""
+                SELECT * FROM cypher('{config.graph_name}', $$
                     MATCH (e:Entity)
                     WHERE toLower(e.name) CONTAINS toLower($query)
                     OR toLower(e.aliases) CONTAINS toLower($query)
@@ -421,8 +422,8 @@ class RetrievalOrchestrator:
                 seed_id = str(seed["id"]).strip('"')
 
                 # Get 1-hop and 2-hop neighbors
-                expansion_query = """
-                    SELECT * FROM cypher('gami', $$
+                expansion_query = f"""
+                    SELECT * FROM cypher('{config.graph_name}', $$
                         MATCH (e:Entity {id: $seed_id})-[r]-(neighbor:Entity)
                         OPTIONAL MATCH (neighbor)-[r2]-(hop2:Entity)
                         WHERE hop2.id <> e.id

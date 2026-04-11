@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from datetime import datetime
 from typing import List, Optional
 
-# Import will work after GAMI is fully installed
+# Import will work after Manifold is fully installed
 try:
     import asyncpg
     from manifold.canonical.claim_normalizer import ClaimNormalizer
