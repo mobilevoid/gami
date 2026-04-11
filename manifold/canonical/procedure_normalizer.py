@@ -34,11 +34,11 @@ INSTRUCTION_STARTERS = re.compile(
     re.IGNORECASE,
 )
 NUMBERED_STEP = re.compile(
-    r"^(\d+)[.):]\s*(.+)$",
+    r"^\s*(\d+)[.):]\s*(.+)$",
     re.MULTILINE,
 )
 BULLETED_STEP = re.compile(
-    r"^[-*•]\s*(.+)$",
+    r"^\s*[-*•]\s*(.+)$",
     re.MULTILINE,
 )
 SEQUENCE_WORDS = re.compile(

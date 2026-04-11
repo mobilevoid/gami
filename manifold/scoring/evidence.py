@@ -57,13 +57,19 @@ def compute_evidence_score(factors: EvidenceFactors) -> float:
 
     # Weighted combination
     # Authority and corroboration are most important for verification
-    score = (
+    # Contradictions have multiplicative effect - high contradiction rate
+    # should significantly reduce score regardless of other factors
+    base_score = (
         0.25 * authority
         + 0.30 * corroboration
         + 0.15 * recency
         + 0.10 * specificity
         + 0.20 * non_contradiction
     )
+
+    # Apply contradiction penalty as multiplier (harsh for high contradiction rates)
+    contradiction_multiplier = non_contradiction ** 1.5
+    score = base_score * contradiction_multiplier
 
     return _clamp(score)
 

@@ -97,6 +97,9 @@ class TemporalExtractor:
         "iso_datetime": re.compile(
             r'\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?'
         ),
+        "iso_date": re.compile(
+            r'\b\d{4}-\d{2}-\d{2}\b'
+        ),
         "date_mdy": re.compile(
             r'(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2},? \d{4}',
             re.I
@@ -259,7 +262,7 @@ class TemporalExtractor:
             return TemporalGranularity.EXACT
         if self.PATTERNS["time_12h"].search(text) or self.PATTERNS["time_24h"].search(text):
             return TemporalGranularity.MINUTE
-        if self.PATTERNS["date_mdy"].search(text) or self.PATTERNS["date_dmy"].search(text):
+        if self.PATTERNS["iso_date"].search(text) or self.PATTERNS["date_mdy"].search(text) or self.PATTERNS["date_dmy"].search(text):
             return TemporalGranularity.DAY
         if self.PATTERNS["relative_day"].search(text):
             return TemporalGranularity.RELATIVE
@@ -307,6 +310,7 @@ class TemporalExtractor:
         """Check if text contains an explicit date."""
         return bool(
             self.PATTERNS["iso_datetime"].search(text)
+            or self.PATTERNS["iso_date"].search(text)
             or self.PATTERNS["date_mdy"].search(text)
             or self.PATTERNS["date_dmy"].search(text)
         )
@@ -323,24 +327,25 @@ def compute_temporal_similarity(
     v1 = features1.to_list()
     v2 = features2.to_list()
 
-    # Weights for each feature (emphasize recency and specificity)
+    # Weights for each feature (emphasize recency and timestamps)
     weights = [
-        0.10,  # absolute_timestamp
-        0.20,  # relative_recency
+        0.15,  # absolute_timestamp
+        0.25,  # relative_recency
         0.05,  # hour_sin
         0.05,  # hour_cos
         0.05,  # dow_sin
         0.05,  # dow_cos
-        0.05,  # is_business_hours
-        0.15,  # temporal_specificity
+        0.08,  # is_business_hours
+        0.10,  # temporal_specificity
         0.05,  # duration
-        0.10,  # sequence_position
+        0.07,  # sequence_position
         0.05,  # has_explicit_date
-        0.10,  # temporal_distance
+        0.05,  # temporal_distance
     ]
 
-    # Weighted absolute difference (inverted to similarity)
-    diff = sum(w * abs(a - b) for w, a, b in zip(weights, v1, v2))
-    similarity = 1.0 - min(1.0, diff)
+    # Weighted squared difference for sharper discrimination
+    diff = sum(w * (a - b) ** 2 for w, a, b in zip(weights, v1, v2))
+    # Take sqrt to bring back to roughly [0,1] scale
+    similarity = 1.0 - min(1.0, diff ** 0.5)
 
     return similarity
