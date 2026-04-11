@@ -65,20 +65,46 @@ async def list_tools() -> list[Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     """Dispatch tool calls to GAMI operations."""
+    import time
+
+    start_time = time.perf_counter()
+    success = False
+    error_type = None
+
     try:
         handler = TOOL_HANDLERS.get(name)
         if not handler:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
         result = await handler(arguments)
+        success = True
         return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
     except Exception as exc:
         logger.error("Tool %s failed: %s", name, exc, exc_info=True)
+        error_type = type(exc).__name__
         return [TextContent(
             type="text",
             text=json.dumps({"error": str(exc), "tool": name}),
         )]
+
+    finally:
+        latency = time.perf_counter() - start_time
+        # Track MCP tool metrics
+        try:
+            from manifold.metrics import track_mcp_tool
+            track_mcp_tool(
+                tool=name,
+                latency=latency,
+                success=success,
+                error_type=error_type,
+            )
+        except Exception as metric_err:
+            logger.debug(f"Metrics tracking failed: {metric_err}")
+
+        # Log slow tool calls
+        if latency > 5.0:
+            logger.warning(f"Slow MCP tool: {name} took {latency:.2f}s")
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.llm.embeddings import embed_text
-from api.search.hybrid import hybrid_search, vector_search, lexical_search
+from api.search.hybrid import (
+    hybrid_search,
+    vector_search,
+    lexical_search,
+    hybrid_manifold_search,
+)
 from api.services.context_budget import (
     ContextBudget,
     EvidenceItem,
@@ -34,6 +39,13 @@ from api.services.query_classifier import (
 from api.services.db import AsyncSessionLocal
 from api.services.hot_cache import search_hot_cache
 from api.services.learning_service import RetrievalLogger
+from api.services.event_publisher import publish_event
+from manifold.retrieval.query_router import (
+    route_query,
+    ManifoldType,
+    MANIFOLD_WEIGHT_PROFILES,
+    QueryIntent,
+)
 
 logger = logging.getLogger("gami.services.retrieval")
 
@@ -559,13 +571,38 @@ async def recall(
             except Exception as exc:
                 logger.debug("Graph expansion failed (non-critical): %s", exc)
 
-        # ---- 4d. Search segments (standard hybrid search) ----
-        results = await hybrid_search(
-            db, query, query_embedding, tids,
-            limit=search_limit,
-            vector_weight=0.7,
-            lexical_weight=0.3,
+        # ---- 4d. Search segments (multi-manifold + hybrid search) ----
+        # Get manifold weights based on query intent
+        manifold_weights_dict, detected_intent, intent_confidence = route_query(query)
+        # Convert enum keys to string keys for the search function
+        manifold_weights = {
+            mt.value if hasattr(mt, 'value') else str(mt): w
+            for mt, w in manifold_weights_dict.items()
+        }
+
+        logger.debug(
+            f"Query intent: {detected_intent} (conf={intent_confidence:.2f}), "
+            f"manifold_weights: {manifold_weights}"
         )
+
+        # Try multi-manifold search first, fall back to traditional hybrid
+        try:
+            results = await hybrid_manifold_search(
+                db, query, query_embedding, tids,
+                manifold_weights=manifold_weights,
+                limit=search_limit,
+                vector_weight=0.4,  # Traditional search gets 40%
+                manifold_weight=0.6,  # Manifold search gets 60%
+            )
+        except Exception as manifold_err:
+            logger.warning(f"Manifold search failed, falling back to hybrid: {manifold_err}")
+            results = await hybrid_search(
+                db, query, query_embedding, tids,
+                limit=search_limit,
+                vector_weight=0.7,
+                lexical_weight=0.3,
+            )
+
         search_ms = (time.monotonic() - t_search) * 1000
 
         # Filter noise from segments
@@ -705,6 +742,22 @@ async def recall(
 
         asyncio.get_event_loop().create_task(_log_retrieval_task())
 
+    # Publish event for subconscious daemon (fire-and-forget)
+    try:
+        publish_event(
+            event_type="query",
+            session_id=session_id,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            query=query,
+            mode=classification.mode.value,
+            results=[ev.item_id for ev in evidence_results[:10]],
+            result_count=len(evidence_results),
+            latency_ms=round(total_ms, 1),
+        )
+    except Exception as pub_err:
+        logger.debug(f"Event publish failed (non-critical): {pub_err}")
+
     return RecallResult(
         query=query,
         mode=classification.mode.value,
@@ -731,19 +784,41 @@ async def verify_claim(
 ) -> VerifyResult:
     """Check whether a claim is supported or contradicted by stored evidence.
 
-    Searches for the claim, then looks for both supporting and contradicting
-    evidence. Verdict is based on score distribution.
+    Searches for the claim using manifold-aware search, prioritizing
+    CLAIM and EVIDENCE manifolds. Verdict is based on score distribution.
     """
     tids = tenant_ids or [tenant_id]
     if "shared" not in tids:
         tids = list(tids) + ["shared"]
     query_embedding = await embed_text(claim_text)
 
+    # Use verification-optimized manifold weights
+    # Prioritize CLAIM and EVIDENCE manifolds for fact-checking
+    verification_weights = {
+        "TOPIC": 0.20,
+        "CLAIM": 0.35,
+        "PROCEDURE": 0.05,
+        "RELATION": 0.10,
+        "TIME": 0.05,
+        "EVIDENCE": 0.25,
+    }
+
     async with AsyncSessionLocal() as db:
-        results = await hybrid_search(
-            db, claim_text, query_embedding, tids,
-            limit=max_evidence * 2,
-        )
+        try:
+            results = await hybrid_manifold_search(
+                db, claim_text, query_embedding, tids,
+                manifold_weights=verification_weights,
+                limit=max_evidence * 2,
+                vector_weight=0.4,
+                manifold_weight=0.6,
+            )
+        except Exception as e:
+            # Fall back to standard search if manifold search fails
+            logger.warning(f"Manifold search failed in verify_claim, falling back: {e}")
+            results = await hybrid_search(
+                db, claim_text, query_embedding, tids,
+                limit=max_evidence * 2,
+            )
 
     if not results:
         return VerifyResult(

@@ -185,3 +185,254 @@ async def hybrid_search(
     )
 
     return sorted_results[:limit]
+
+
+# ---------------------------------------------------------------------------
+# Multi-Manifold Search
+# ---------------------------------------------------------------------------
+
+async def manifold_search(
+    db: AsyncSession,
+    query_embedding: list[float],
+    tenant_ids: list[str],
+    manifold_weights: dict[str, float],
+    limit: int = 20,
+) -> list[dict]:
+    """Search across multiple manifolds with weighted fusion.
+
+    Args:
+        db: Database session
+        query_embedding: The 768d query embedding
+        tenant_ids: Tenant IDs to filter by
+        manifold_weights: Dict mapping manifold type to weight (e.g., {"TOPIC": 0.4, "CLAIM": 0.2})
+        limit: Maximum results to return
+
+    Returns:
+        List of results with fused scores from all manifolds
+    """
+    vec_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
+
+    # Collect results per manifold
+    all_results: dict[str, list[dict]] = {}
+
+    for manifold_type, weight in manifold_weights.items():
+        if weight < 0.05:  # Skip negligible weights
+            continue
+
+        result = await db.execute(
+            text("""
+                SELECT
+                    me.target_id,
+                    me.target_type,
+                    me.canonical_form,
+                    me.confidence_score,
+                    1 - (me.embedding <=> CAST(:query AS vector)) AS similarity,
+                    s.source_id,
+                    s.owner_tenant_id,
+                    s.segment_type,
+                    s.title_or_heading,
+                    s.text,
+                    s.token_count,
+                    s.speaker_role,
+                    s.speaker_name,
+                    s.message_timestamp,
+                    COALESCE(s.retrieval_count, 0) AS retrieval_count,
+                    s.last_retrieved_at
+                FROM manifold_embeddings me
+                JOIN segments s ON me.target_id = s.segment_id
+                WHERE me.manifold_type = :mtype
+                AND me.target_type = 'segment'
+                AND me.embedding IS NOT NULL
+                AND s.owner_tenant_id = ANY(:tids)
+                ORDER BY me.embedding <=> CAST(:query AS vector)
+                LIMIT :lim
+            """),
+            {
+                "query": vec_str,
+                "mtype": manifold_type,
+                "tids": tenant_ids,
+                "lim": limit * 2,  # Fetch more for fusion
+            }
+        )
+        rows = result.fetchall()
+
+        all_results[manifold_type] = [
+            {
+                "segment_id": r[0],
+                "target_type": r[1],
+                "canonical_form": r[2],
+                "confidence_score": float(r[3]) if r[3] else 0.5,
+                "similarity": float(r[4]),
+                "source_id": r[5],
+                "owner_tenant_id": r[6],
+                "segment_type": r[7],
+                "title_or_heading": r[8],
+                "text": r[9],
+                "token_count": r[10],
+                "speaker_role": r[11],
+                "speaker_name": r[12],
+                "message_timestamp": r[13].isoformat() if r[13] else None,
+                "retrieval_count": int(r[14]),
+                "last_retrieved_at": r[15].isoformat() if r[15] else None,
+                "manifold_type": manifold_type,
+            }
+            for r in rows
+        ]
+
+    # Percentile normalize within each manifold
+    for manifold_type, results in all_results.items():
+        if not results:
+            continue
+        scores = [r["similarity"] for r in results]
+        percentiles = _percentile_normalize(scores)
+        for r, p in zip(results, percentiles):
+            r["percentile_score"] = p
+
+    # Fuse results across manifolds
+    fused: dict[str, dict] = {}
+
+    for manifold_type, results in all_results.items():
+        weight = manifold_weights.get(manifold_type, 0.0)
+        if weight <= 0:
+            continue
+
+        for r in results:
+            segment_id = r["segment_id"]
+
+            if segment_id not in fused:
+                fused[segment_id] = {
+                    **r,
+                    "manifold_scores": {},
+                    "combined_score": 0.0,
+                }
+
+            fused[segment_id]["manifold_scores"][manifold_type] = {
+                "raw_score": r["similarity"],
+                "percentile": r.get("percentile_score", 0.5),
+                "weighted": r.get("percentile_score", 0.5) * weight,
+            }
+            fused[segment_id]["combined_score"] += r.get("percentile_score", 0.5) * weight
+
+    # Sort by fused score and return top results
+    sorted_results = sorted(fused.values(), key=lambda x: -x["combined_score"])
+
+    # Add search_type marker
+    for r in sorted_results:
+        r["search_type"] = "manifold"
+
+    return sorted_results[:limit]
+
+
+def _percentile_normalize(scores: list[float]) -> list[float]:
+    """Convert scores to percentile ranks (0-1)."""
+    if not scores:
+        return []
+    if len(scores) == 1:
+        return [0.5]
+
+    sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i])
+    percentiles = [0.0] * len(scores)
+    n = len(scores)
+
+    for rank, idx in enumerate(sorted_indices):
+        percentiles[idx] = rank / (n - 1)
+
+    return percentiles
+
+
+async def hybrid_manifold_search(
+    db: AsyncSession,
+    query: str,
+    query_embedding: list[float],
+    tenant_ids: list[str],
+    manifold_weights: dict[str, float],
+    limit: int = 20,
+    vector_weight: float = 0.5,
+    manifold_weight: float = 0.5,
+) -> list[dict]:
+    """Combined traditional hybrid search + multi-manifold search.
+
+    This is the recommended entry point when manifold embeddings are available.
+    Falls back gracefully to traditional search if manifolds are empty.
+
+    Args:
+        db: Database session
+        query: Query text for lexical search
+        query_embedding: 768d embedding vector
+        tenant_ids: Tenant IDs to filter
+        manifold_weights: Weights for each manifold type
+        limit: Maximum results
+        vector_weight: Weight for traditional hybrid search
+        manifold_weight: Weight for manifold search results
+
+    Returns:
+        Merged and deduplicated results from both search methods
+    """
+    # Run both searches
+    traditional_results = await hybrid_search(
+        db, query, query_embedding, tenant_ids,
+        limit=limit * 2,
+        vector_weight=0.7,
+        lexical_weight=0.3,
+    )
+
+    manifold_results = await manifold_search(
+        db, query_embedding, tenant_ids, manifold_weights,
+        limit=limit * 2,
+    )
+
+    # If manifold search returned nothing, fall back to traditional only
+    if not manifold_results:
+        logger.debug("No manifold results, using traditional search only")
+        return traditional_results[:limit]
+
+    # Normalize traditional scores
+    if traditional_results:
+        trad_scores = [r["combined_score"] for r in traditional_results]
+        trad_percentiles = _percentile_normalize(trad_scores)
+        for r, p in zip(traditional_results, trad_percentiles):
+            r["trad_percentile"] = p
+
+    # Normalize manifold scores
+    if manifold_results:
+        man_scores = [r["combined_score"] for r in manifold_results]
+        man_percentiles = _percentile_normalize(man_scores)
+        for r, p in zip(manifold_results, man_percentiles):
+            r["manifold_percentile"] = p
+
+    # Merge by segment_id
+    merged: dict[str, dict] = {}
+
+    for r in traditional_results:
+        sid = r["segment_id"]
+        merged[sid] = {
+            **r,
+            "trad_score": r.get("trad_percentile", 0.5),
+            "manifold_score": 0.0,
+        }
+
+    for r in manifold_results:
+        sid = r["segment_id"]
+        if sid in merged:
+            merged[sid]["manifold_score"] = r.get("manifold_percentile", 0.5)
+            merged[sid]["manifold_scores"] = r.get("manifold_scores", {})
+            merged[sid]["search_type"] = "hybrid_manifold"
+        else:
+            merged[sid] = {
+                **r,
+                "trad_score": 0.0,
+                "manifold_score": r.get("manifold_percentile", 0.5),
+            }
+
+    # Compute final combined score
+    for sid, entry in merged.items():
+        entry["combined_score"] = (
+            vector_weight * entry.get("trad_score", 0.0) +
+            manifold_weight * entry.get("manifold_score", 0.0)
+        )
+        entry["search_type"] = "hybrid_manifold"
+
+    # Sort by combined score
+    sorted_results = sorted(merged.values(), key=lambda x: -x["combined_score"])
+
+    return sorted_results[:limit]

@@ -162,22 +162,72 @@ class PredictiveRetriever:
         ctx: SessionContext,
         tenant_id: str,
     ) -> Optional[PredictionResult]:
-        """Predict based on conversation state."""
-        # Different states need different types of context
-        query_mode_map = {
-            ConversationState.DEBUGGING: "diagnostic",
-            ConversationState.PLANNING: "how_to",
-            ConversationState.RECALLING: "recall",
-            ConversationState.EXPLORING: "exploration",
-            ConversationState.EXECUTING: "procedural",
-            ConversationState.CONFIRMING: "verification",
+        """Predict based on conversation state using manifold-aware retrieval."""
+        # Map states to query modes and primary manifolds
+        state_config = {
+            ConversationState.DEBUGGING: {
+                "query_mode": "diagnostic",
+                "primary_manifold": "PROCEDURE",
+                "secondary_manifold": "TIME",
+            },
+            ConversationState.PLANNING: {
+                "query_mode": "how_to",
+                "primary_manifold": "PROCEDURE",
+                "secondary_manifold": "TOPIC",
+            },
+            ConversationState.RECALLING: {
+                "query_mode": "recall",
+                "primary_manifold": "TOPIC",
+                "secondary_manifold": "TIME",
+            },
+            ConversationState.EXPLORING: {
+                "query_mode": "exploration",
+                "primary_manifold": "TOPIC",
+                "secondary_manifold": "CLAIM",
+            },
+            ConversationState.EXECUTING: {
+                "query_mode": "procedural",
+                "primary_manifold": "PROCEDURE",
+                "secondary_manifold": "TOPIC",
+            },
+            ConversationState.CONFIRMING: {
+                "query_mode": "verification",
+                "primary_manifold": "CLAIM",
+                "secondary_manifold": "EVIDENCE",
+            },
         }
 
-        query_mode = query_mode_map.get(state)
-        if not query_mode:
+        config = state_config.get(state)
+        if not config:
             return None
 
-        # Find segments frequently retrieved in this mode
+        query_mode = config["query_mode"]
+        primary_manifold = config["primary_manifold"]
+
+        # Try manifold-based prediction first (if manifold embeddings exist)
+        try:
+            manifold_result = await db.execute(text("""
+                SELECT DISTINCT me.target_id as segment_id
+                FROM manifold_embeddings me
+                JOIN segments s ON me.target_id = s.segment_id
+                WHERE me.manifold_type = :manifold
+                AND me.target_type = 'segment'
+                AND s.owner_tenant_id = :tenant_id
+                AND s.importance_score > 0.5
+                ORDER BY s.importance_score DESC
+                LIMIT :limit
+            """), {
+                "manifold": primary_manifold,
+                "tenant_id": tenant_id,
+                "limit": self.max_predictions // 3,
+            })
+
+            manifold_segments = [row.segment_id for row in manifold_result.fetchall()]
+        except Exception as e:
+            logger.debug(f"Manifold prediction not available: {e}")
+            manifold_segments = []
+
+        # Fall back to/augment with retrieval log based prediction
         result = await db.execute(text("""
             SELECT DISTINCT unnest(segments_returned) as segment_id
             FROM retrieval_logs
@@ -192,15 +242,20 @@ class PredictiveRetriever:
             "limit": self.max_predictions // 2,
         })
 
-        segment_ids = [row.segment_id for row in result.fetchall()]
+        log_segments = [row.segment_id for row in result.fetchall()]
+
+        # Merge results, prioritizing manifold-based segments
+        all_segments = manifold_segments + [s for s in log_segments if s not in manifold_segments]
+        segment_ids = all_segments[:self.max_predictions // 2]
 
         if segment_ids:
+            confidence = 0.7 if manifold_segments else 0.6
             return PredictionResult(
                 segment_ids=segment_ids,
                 entity_ids=[],
                 topics=[],
-                confidence=0.6,
-                prediction_source="state",
+                confidence=confidence,
+                prediction_source=f"state:{primary_manifold}",
             )
 
         return None
@@ -212,14 +267,15 @@ class PredictiveRetriever:
         tenant_id: str,
     ) -> Optional[PredictionResult]:
         """Predict based on active entities."""
-        # Find segments mentioning these entities
+        # Find segments mentioning these entities via provenance table
         result = await db.execute(text("""
             SELECT DISTINCT s.segment_id
             FROM segments s
-            JOIN entity_mentions em ON s.segment_id = em.segment_id
-            WHERE em.entity_id = ANY(:entities)
+            JOIN provenance p ON s.segment_id = p.segment_id
+            WHERE p.target_type = 'entity'
+            AND p.target_id = ANY(:entities)
             AND s.owner_tenant_id = :tenant_id
-            AND s.status = 'active'
+            AND s.storage_tier != 'cold'
             ORDER BY s.importance_score DESC NULLS LAST
             LIMIT :limit
         """), {
@@ -283,11 +339,12 @@ class PredictiveRetriever:
         tenant_id: str,
     ) -> Optional[PredictionResult]:
         """Predict by expanding from recent segments via graph."""
-        # Find entities in recent segments
+        # Find entities in recent segments via provenance table
         result = await db.execute(text("""
-            SELECT DISTINCT em.entity_id
-            FROM entity_mentions em
-            WHERE em.segment_id = ANY(:segments)
+            SELECT DISTINCT p.target_id as entity_id
+            FROM provenance p
+            WHERE p.segment_id = ANY(:segments)
+            AND p.target_type = 'entity'
             LIMIT 10
         """), {"segments": recent_segments})
 
@@ -313,14 +370,15 @@ class PredictiveRetriever:
         related_entities = [row.related_entity for row in result.fetchall()]
 
         if related_entities:
-            # Get segments for related entities
+            # Get segments for related entities via provenance
             seg_result = await db.execute(text("""
                 SELECT DISTINCT s.segment_id
                 FROM segments s
-                JOIN entity_mentions em ON s.segment_id = em.segment_id
-                WHERE em.entity_id = ANY(:entities)
+                JOIN provenance p ON s.segment_id = p.segment_id
+                WHERE p.target_type = 'entity'
+                AND p.target_id = ANY(:entities)
                 AND s.owner_tenant_id = :tenant_id
-                AND s.status = 'active'
+                AND s.storage_tier != 'cold'
                 AND s.segment_id != ALL(:exclude)
                 ORDER BY s.importance_score DESC NULLS LAST
                 LIMIT :limit

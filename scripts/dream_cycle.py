@@ -1207,6 +1207,227 @@ JSON:"""
 
 
 # ============================================================
+# Phase 9: Multi-Manifold Embedding Backfill
+# ============================================================
+
+def dream_manifold_embeddings(batch_size=50, max_segments=500):
+    """Generate embeddings for all 6 manifolds on segments missing them.
+
+    This phase populates the manifold_embeddings table with:
+    - TOPIC: Direct text embedding
+    - CLAIM: Extracted claims embedding
+    - PROCEDURE: Extracted steps embedding
+    - TIME: Temporal features projection
+    - EVIDENCE: Evidence factors projection
+    - RELATION: Graph fingerprint projection (if available)
+    """
+    log.info("=== Dream Phase 9: Multi-Manifold Embedding ===")
+
+    try:
+        import numpy as np
+        from manifold.embeddings.multi_embedder import MultiManifoldEmbedder
+        from manifold.embeddings.projectors import (
+            compute_evidence_factors,
+            compute_graph_fingerprint,
+            get_time_projector,
+            get_evidence_projector,
+            get_relation_projector,
+        )
+
+        embedder = MultiManifoldEmbedder()
+        time_projector = get_time_projector()
+        evidence_projector = get_evidence_projector()
+        relation_projector = get_relation_projector()
+
+        total_processed = 0
+        batch_count = 0
+
+        while total_processed < max_segments and not should_stop():
+            batch_count += 1
+
+            # Get segments needing manifold embeddings
+            with engine.connect() as conn:
+                segments = conn.execute(text("""
+                    SELECT s.segment_id, s.text, s.owner_tenant_id
+                    FROM segments s
+                    WHERE s.embedding IS NOT NULL
+                    AND s.storage_tier != 'cold'
+                    AND LENGTH(s.text) > 50
+                    AND s.segment_id NOT IN (
+                        SELECT DISTINCT target_id
+                        FROM manifold_embeddings
+                        WHERE manifold_type = 'TOPIC'
+                    )
+                    ORDER BY s.created_at DESC
+                    LIMIT :lim
+                """), {"lim": batch_size}).fetchall()
+
+                if not segments:
+                    log.info("  No more segments need manifold embeddings")
+                    break
+
+                log.info(f"  Batch {batch_count}: processing {len(segments)} segments...")
+
+                # Collect texts for batch embedding
+                texts_topic = []
+                texts_claim = []
+                texts_procedure = []
+                segment_data = []
+
+                for seg in segments:
+                    segment_id, text, tenant_id = seg
+                    if not text or len(text) < 10:
+                        continue
+
+                    texts_topic.append(text)
+
+                    # Extract claims
+                    claims = embedder._extract_claims(text)
+                    claim_text = " | ".join(claims) if claims else text[:500]
+                    texts_claim.append(claim_text)
+
+                    # Extract procedures
+                    steps = embedder._extract_procedure_steps(text)
+                    proc_text = " → ".join(steps) if steps else ""
+                    texts_procedure.append(proc_text if proc_text else text[:500])
+
+                    segment_data.append({
+                        "segment_id": segment_id,
+                        "text": text,
+                        "claim_text": claim_text,
+                        "proc_text": proc_text if proc_text else None,
+                    })
+
+                if not texts_topic:
+                    continue
+
+                # Batch embed
+                try:
+                    from api.llm.embeddings import embed_texts_batch
+                    emb_topic = embed_texts_batch(texts_topic)
+                    emb_claim = embed_texts_batch(texts_claim)
+                    emb_procedure = embed_texts_batch(texts_procedure)
+                except Exception as e:
+                    log.error(f"  Embedding failed: {e}")
+                    continue
+
+                # Save to database
+                for i, seg in enumerate(segment_data):
+                    segment_id = seg["segment_id"]
+
+                    # Helper to save embedding
+                    def save_emb(mtype, embedding, canonical=None):
+                        emb_str = "[" + ",".join(str(x) for x in embedding.flatten()) + "]"
+                        conn.execute(text(f"""
+                            INSERT INTO manifold_embeddings
+                            (target_id, target_type, manifold_type, embedding, canonical_form, updated_at)
+                            VALUES (:tid, 'segment', :mtype, '{emb_str}'::vector, :canonical, NOW())
+                            ON CONFLICT (target_id, target_type, manifold_type)
+                            DO UPDATE SET embedding = EXCLUDED.embedding, updated_at = NOW()
+                        """), {"tid": segment_id, "mtype": mtype, "canonical": canonical})
+
+                    # TOPIC
+                    save_emb("TOPIC", np.array(emb_topic[i]), seg["text"][:500])
+
+                    # CLAIM
+                    save_emb("CLAIM", np.array(emb_claim[i]), seg["claim_text"][:500])
+
+                    # PROCEDURE (only if we extracted steps)
+                    if seg["proc_text"]:
+                        save_emb("PROCEDURE", np.array(emb_procedure[i]), seg["proc_text"][:500])
+
+                    # TIME
+                    time_features = embedder._extract_temporal_features(seg["text"])
+                    if time_features is not None:
+                        time_emb = time_projector.project(time_features)
+                        save_emb("TIME", time_emb, None)
+
+                    # EVIDENCE (with placeholder factors)
+                    evidence_factors = compute_evidence_factors(
+                        authority_score=0.5,
+                        corroboration_count=0,
+                        recency_days=30.0,
+                        specificity_score=0.5,
+                        contradiction_ratio=0.0,
+                    )
+                    evidence_emb = evidence_projector.project(evidence_factors)
+                    save_emb("EVIDENCE", evidence_emb, None)
+
+                    # RELATION (graph fingerprint from provenance)
+                    try:
+                        # Get entity connections for this segment
+                        prov_result = conn.execute(text("""
+                            SELECT p.target_id, e.entity_type
+                            FROM provenance p
+                            LEFT JOIN entities e ON p.target_id = e.entity_id
+                            WHERE p.segment_id = :sid AND p.target_type = 'entity'
+                        """), {"sid": segment_id})
+                        entity_rows = prov_result.fetchall()
+
+                        if entity_rows:
+                            entity_ids = [r[0] for r in entity_rows]
+                            entity_types = [r[1] or "unknown" for r in entity_rows if r[1]]
+
+                            # Get relations involving these entities
+                            rel_result = conn.execute(text("""
+                                SELECT relation_type,
+                                    CASE WHEN source_entity_id = ANY(:eids) THEN 'out' ELSE 'in' END
+                                FROM relations
+                                WHERE source_entity_id = ANY(:eids) OR target_entity_id = ANY(:eids)
+                                LIMIT 50
+                            """), {"eids": entity_ids})
+                            rel_rows = rel_result.fetchall()
+
+                            in_edges = {}
+                            out_edges = {}
+                            for rel_type, direction in rel_rows:
+                                rel_type = rel_type or "relates_to"
+                                if direction == "in":
+                                    in_edges[rel_type] = in_edges.get(rel_type, 0) + 1
+                                else:
+                                    out_edges[rel_type] = out_edges.get(rel_type, 0) + 1
+
+                            centrality = min(1.0, len(rel_rows) / 50.0)
+                            fingerprint = compute_graph_fingerprint(
+                                in_edges=in_edges,
+                                out_edges=out_edges,
+                                connected_types=list(set(entity_types)),
+                                centrality=centrality,
+                            )
+                            relation_emb = relation_projector.project(fingerprint)
+                            save_emb("RELATION", relation_emb, None)
+                    except Exception as rel_err:
+                        pass  # RELATION is optional
+
+                    total_processed += 1
+
+                conn.commit()
+                log.info(f"  Batch {batch_count} complete: {len(segment_data)} segments embedded")
+
+        # Show final counts
+        with engine.connect() as conn:
+            counts = conn.execute(text("""
+                SELECT manifold_type, COUNT(*)
+                FROM manifold_embeddings
+                GROUP BY manifold_type
+                ORDER BY manifold_type
+            """)).fetchall()
+
+            result = {"total_processed": total_processed, "manifold_counts": {}}
+            for mtype, count in counts:
+                result["manifold_counts"][mtype] = count
+
+        log.info(f"  Manifold embedding complete: {json.dumps(result)}")
+        return result
+
+    except Exception as e:
+        log.error(f"  Manifold embedding failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e)}
+
+
+# ============================================================
 # INNOVATION EXTENSION PHASES
 # ============================================================
 
@@ -1434,6 +1655,7 @@ def dream(duration=None, phase=None, check_idle=False):
         ("relate", dream_relate),
         ("score", dream_score),
         ("embed", dream_embed),
+        ("manifold_embeddings", dream_manifold_embeddings),
         ("deep_dream", dream_deep),
         ("auto_approve", dream_auto_approve),
         # Innovation extension phases

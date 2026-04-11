@@ -78,6 +78,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add metrics middleware
+try:
+    from api.middleware.metrics import MetricsMiddleware, RequestIDMiddleware
+    app.add_middleware(MetricsMiddleware)
+    app.add_middleware(RequestIDMiddleware)
+    logger.info("Metrics middleware enabled")
+except ImportError as e:
+    logger.warning(f"Metrics middleware not available: {e}")
+
 
 # ---------------------------------------------------------------------------
 # Global error handler
@@ -117,8 +126,14 @@ async def health():
 
 @app.get("/health/deep")
 async def health_deep():
-    """Deep health check — verifies DB, Redis, and innovation components."""
-    checks = {"db": "unknown", "redis": "unknown", "innovation_tables": "unknown", "config": "unknown"}
+    """Deep health check — verifies DB, Redis, innovation components, and manifold coverage."""
+    checks = {
+        "db": "unknown",
+        "redis": "unknown",
+        "innovation_tables": "unknown",
+        "config": "unknown",
+        "manifold_coverage": "unknown",
+    }
 
     # Check DB
     try:
@@ -172,7 +187,44 @@ async def health_deep():
     except Exception as exc:
         checks["config"] = f"error: {exc}"
 
-    overall = "ok" if all(v == "ok" for v in checks.values()) else "degraded"
+    # Check manifold embedding coverage
+    try:
+        from api.services.db import async_engine
+        from sqlalchemy import text as sql_text
+
+        async with async_engine.connect() as conn:
+            # Get total segments with embeddings
+            total_result = await conn.execute(sql_text(
+                "SELECT COUNT(*) FROM segments WHERE embedding IS NOT NULL"
+            ))
+            total_segments = total_result.scalar() or 0
+
+            # Get segments with manifold embeddings
+            manifold_result = await conn.execute(sql_text("""
+                SELECT manifold_type, COUNT(DISTINCT target_id)
+                FROM manifold_embeddings
+                WHERE target_type = 'segment'
+                GROUP BY manifold_type
+            """))
+            manifold_counts = {row[0]: row[1] for row in manifold_result.fetchall()}
+
+            # Calculate coverage percentage for TOPIC (primary manifold)
+            topic_count = manifold_counts.get("TOPIC", 0)
+            coverage_pct = (topic_count / total_segments * 100) if total_segments > 0 else 0
+
+            checks["manifold_coverage"] = {
+                "total_segments": total_segments,
+                "manifold_counts": manifold_counts,
+                "coverage_percent": round(coverage_pct, 1),
+                "status": "ok" if coverage_pct >= 50 else "building" if coverage_pct > 0 else "empty",
+            }
+    except Exception as exc:
+        checks["manifold_coverage"] = f"error: {exc}"
+
+    overall = "ok" if all(
+        (v == "ok" or (isinstance(v, dict) and v.get("status") in ("ok", "building")))
+        for v in checks.values()
+    ) else "degraded"
     return {
         "status": overall,
         "service": "gami",
@@ -387,6 +439,32 @@ async def prometheus_metrics():
             except Exception:
                 pass
 
+            # Manifold embedding metrics
+            try:
+                rows = await db.execute(_sql_text("""
+                    SELECT manifold_type, COUNT(*)
+                    FROM manifold_embeddings
+                    GROUP BY manifold_type
+                """))
+                lines.append("# HELP gami_manifold_embeddings Manifold embeddings by type")
+                lines.append("# TYPE gami_manifold_embeddings gauge")
+                for r in rows.fetchall():
+                    lines.append(f'gami_manifold_embeddings{{manifold="{r[0]}"}} {r[1]}')
+
+                # Calculate manifold coverage percentage
+                total_segments = (await db.execute(_sql_text(
+                    "SELECT COUNT(*) FROM segments WHERE embedding IS NOT NULL"
+                ))).scalar() or 0
+                topic_count = (await db.execute(_sql_text(
+                    "SELECT COUNT(DISTINCT target_id) FROM manifold_embeddings "
+                    "WHERE manifold_type = 'TOPIC' AND target_type = 'segment'"
+                ))).scalar() or 0
+                coverage = topic_count / total_segments if total_segments > 0 else 0
+                _g("gami_manifold_coverage", f"{coverage:.4f}",
+                   "Fraction of segments with manifold embeddings")
+            except Exception:
+                pass
+
     except Exception as exc:
         lines.append(f"# ERROR database_query_failed {exc}")
 
@@ -407,5 +485,17 @@ async def prometheus_metrics():
     # Uptime
     _g("gami_uptime_seconds", f"{_time.time() - _start_time:.0f}",
        "API server uptime in seconds")
+
+    # Append prometheus_client metrics (MCP tools, API requests, etc.)
+    try:
+        from manifold.metrics import get_metrics, PROMETHEUS_AVAILABLE
+        if PROMETHEUS_AVAILABLE:
+            prom_output = get_metrics()
+            if prom_output:
+                lines.append("")
+                lines.append("# --- prometheus_client metrics ---")
+                lines.append(prom_output.decode('utf-8').strip())
+    except Exception as prom_err:
+        lines.append(f"# prometheus_client metrics unavailable: {prom_err}")
 
     return "\n".join(lines) + "\n"

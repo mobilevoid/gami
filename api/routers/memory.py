@@ -29,6 +29,7 @@ from api.services.session_service import (
     record_learning_signal,
     update_session_state,
 )
+from api.services.event_publisher import publish_query_event, publish_feedback_event
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +296,15 @@ async def recall_memory(req: RecallRequest):
 
             import asyncio
             asyncio.create_task(_record_session_retrieval())
+
+            # Publish event for subconscious daemon
+            publish_query_event(
+                session_id=req.session_id,
+                query=req.query,
+                tenant_id=req.tenant_id,
+                agent_id=req.agent_id,
+                results=[{"segment_id": e.item_id, "score": e.score} for e in result.evidence[:10]],
+            )
 
         return RecallResponse(
             query=result.query,
