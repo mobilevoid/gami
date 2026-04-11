@@ -23,6 +23,12 @@ from api.services.memory_service import (
     get_context,
 )
 from api.services.learning_service import get_retrieval_logger, OUTCOME_SIGNALS
+from api.services.session_service import (
+    ensure_session,
+    record_retrieval,
+    record_learning_signal,
+    update_session_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -249,6 +255,16 @@ async def recall_memory(req: RecallRequest):
         cit_level = CitationLevel.BRIEF
 
     try:
+        # Track session if session_id provided
+        if req.session_id:
+            async with AsyncSessionLocal() as db:
+                await ensure_session(
+                    db=db,
+                    session_id=req.session_id,
+                    tenant_id=req.tenant_id,
+                    agent_id=req.agent_id,
+                )
+
         result = await recall(
             query=req.query,
             tenant_id=req.tenant_id,
@@ -260,6 +276,26 @@ async def recall_memory(req: RecallRequest):
             session_id=req.session_id,
             agent_id=req.agent_id,
         )
+
+        # Record retrieval in session (fire-and-forget)
+        if req.session_id:
+            async def _record_session_retrieval():
+                try:
+                    async with AsyncSessionLocal() as db:
+                        await record_retrieval(db, req.session_id)
+                        # Update session state based on query mode
+                        await update_session_state(
+                            db=db,
+                            session_id=req.session_id,
+                            state=result.mode,
+                            confidence=0.7,
+                        )
+                except Exception as e:
+                    logger.warning("Session retrieval tracking failed: %s", e)
+
+            import asyncio
+            asyncio.create_task(_record_session_retrieval())
+
         return RecallResponse(
             query=result.query,
             mode=result.mode,
@@ -345,6 +381,15 @@ async def remember_endpoint(req: RememberRequest):
     sensitivity, and starts as provisional status.
     """
     try:
+        # Track session if session_id provided
+        if req.session_id:
+            async with AsyncSessionLocal() as db:
+                await ensure_session(
+                    db=db,
+                    session_id=req.session_id,
+                    tenant_id=req.tenant_id,
+                )
+
         result = await remember(
             tenant_id=req.tenant_id,
             text_content=req.text,
@@ -444,6 +489,14 @@ async def record_feedback(req: FeedbackRequest):
                 outcome_type=req.feedback_type,
                 correction_text=req.correction_text,
             )
+
+            # Also record learning signal in session tracking
+            if success:
+                await record_learning_signal(
+                    db=db,
+                    session_id=req.session_id,
+                    positive=(signal > 0),
+                )
 
         return {
             "status": "recorded" if success else "no_matching_log",
