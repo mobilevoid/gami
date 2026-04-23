@@ -1487,19 +1487,22 @@ async def _memory_feedback(args: dict) -> dict:
 
 
 async def _memory_suggest_procedure(args: dict) -> dict:
-    """Suggest relevant learned procedures for a task.
+    """Suggest relevant workflow patterns for a task.
 
-    Searches the procedures table for workflows that match the query
-    and returns them with their steps and parameters.
+    Searches workflow memories first (primary), falls back to legacy procedures.
+    Workflow memories consolidate naturally over time via dream_consolidate.
     """
     from api.llm.embeddings import embed_text
     from api.services.db import AsyncSessionLocal
     from sqlalchemy import text as sql_text
 
-    query = args["query"]
+    query = args.get("query", "")
+    if not query:
+        return {"error": "query required"}
+
     context = args.get("context", "")
     tenant_id = args.get("tenant_id", "claude-opus")
-    limit = args.get("limit", 3)
+    limit = args.get("limit", 5)
     min_confidence = args.get("min_confidence", 0.4)
 
     # Combine query and context for embedding
@@ -1508,17 +1511,16 @@ async def _memory_suggest_procedure(args: dict) -> dict:
     vec_str = "[" + ",".join(str(v) for v in embedding) + "]"
 
     async with AsyncSessionLocal() as db:
-        # Vector search with confidence filter
-        rows = await db.execute(
+        # Primary: Search workflow memories
+        workflow_rows = await db.execute(
             sql_text("""
-                SELECT procedure_id, name, description, category,
-                       steps, parameters, preconditions, postconditions,
-                       success_rate, execution_count, confidence,
+                SELECT memory_id, normalized_text, importance_score,
                        1 - (embedding <=> CAST(:vec AS vector)) as similarity
-                FROM procedures
+                FROM assistant_memories
                 WHERE owner_tenant_id = :tid
+                AND memory_type = 'workflow'
                 AND status = 'active'
-                AND confidence >= :min_conf
+                AND importance_score >= :min_conf
                 AND embedding IS NOT NULL
                 ORDER BY embedding <=> CAST(:vec AS vector)
                 LIMIT :lim
@@ -1526,28 +1528,65 @@ async def _memory_suggest_procedure(args: dict) -> dict:
             {"vec": vec_str, "tid": tenant_id, "min_conf": min_confidence, "lim": limit},
         )
 
-        procedures = []
-        for r in rows.fetchall():
-            procedures.append({
-                "procedure_id": r.procedure_id,
-                "name": r.name,
-                "description": r.description,
-                "category": r.category,
-                "steps": r.steps,
-                "parameters": r.parameters,
-                "preconditions": r.preconditions,
-                "postconditions": r.postconditions,
-                "success_rate": float(r.success_rate) if r.success_rate else 0.5,
-                "executions": r.execution_count,
-                "confidence": float(r.confidence) if r.confidence else 0.5,
+        workflows = []
+        for r in workflow_rows.fetchall():
+            workflows.append({
+                "id": r.memory_id,
+                "description": r.normalized_text,
+                "confidence": float(r.importance_score) if r.importance_score else 0.5,
                 "similarity": float(r.similarity),
+                "source": "workflow_memory",
             })
 
+        # Fallback: Check legacy procedures table if we need more results
+        legacy_procedures = []
+        if len(workflows) < limit:
+            try:
+                proc_rows = await db.execute(
+                    sql_text("""
+                        SELECT procedure_id, name, description, category,
+                               steps, parameters, preconditions, postconditions,
+                               success_rate, execution_count, confidence,
+                               1 - (embedding <=> CAST(:vec AS vector)) as similarity
+                        FROM procedures
+                        WHERE owner_tenant_id = :tid
+                        AND status = 'active'
+                        AND confidence >= :min_conf
+                        AND embedding IS NOT NULL
+                        ORDER BY embedding <=> CAST(:vec AS vector)
+                        LIMIT :lim
+                    """),
+                    {"vec": vec_str, "tid": tenant_id, "min_conf": min_confidence,
+                     "lim": limit - len(workflows)},
+                )
+
+                for r in proc_rows.fetchall():
+                    legacy_procedures.append({
+                        "procedure_id": r.procedure_id,
+                        "name": r.name,
+                        "description": r.description,
+                        "category": r.category,
+                        "steps": r.steps,
+                        "parameters": r.parameters,
+                        "preconditions": r.preconditions,
+                        "postconditions": r.postconditions,
+                        "success_rate": float(r.success_rate) if r.success_rate else 0.5,
+                        "executions": r.execution_count,
+                        "confidence": float(r.confidence) if r.confidence else 0.5,
+                        "similarity": float(r.similarity),
+                        "source": "legacy_procedure",
+                    })
+            except Exception:
+                pass  # Legacy table may not exist or have different schema
+
+    total = len(workflows) + len(legacy_procedures)
     return {
         "query": query,
-        "procedures": procedures,
-        "total": len(procedures),
-        "message": f"Found {len(procedures)} matching procedures" if procedures else "No matching procedures found",
+        "workflows": workflows,
+        "legacy_procedures": legacy_procedures,
+        "total": total,
+        "message": f"Found {len(workflows)} workflow memories and {len(legacy_procedures)} legacy procedures" if total else "No matching workflows found",
+        "note": "Workflow memories consolidate naturally via dream cycle" if workflows else None,
     }
 
 

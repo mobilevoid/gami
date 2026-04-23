@@ -41,7 +41,7 @@ logging.basicConfig(
 log = logging.getLogger("dream")
 
 engine = create_engine(settings.DATABASE_URL_SYNC, pool_size=3)
-ALL_TENANTS = ["claude-opus", "clawd", "shared", "openclaw", "clawdbot", "agent-zero"]
+ALL_TENANTS = ["clawd", "shared", "openclaw", "clawdbot", "agent-zero"]
 TENANT = "claude-opus"  # Default, rotated each cycle
 STOP_FLAG = False
 
@@ -1718,20 +1718,24 @@ JSON array:"""
 
 
 # ============================================================
-# Phase: Procedure Extraction (Hermes-style)
+# Phase: Workflow Extraction (refactored from Hermes-style procedures)
 # ============================================================
-def dream_extract_procedures(max_sessions=20):
-    """Phase: Extract reusable procedures from successful multi-step sessions.
+def dream_extract_workflows(max_sessions=20):
+    """Phase: Extract workflow patterns as memories instead of rigid procedures.
+
+    Creates memories with memory_type='workflow' that consolidate naturally
+    via dream_consolidate. This aligns with GAMI's identity as a memory system.
 
     Analyzes conversation sessions for:
     1. Multi-step command sequences
     2. Repeated patterns across sessions
     3. Successful troubleshooting flows
     """
-    log.info("=== Dream Phase: Procedure Extraction ===")
+    log.info("=== Dream Phase: Workflow Extraction ===")
 
     with engine.connect() as conn:
         # Find sessions with multiple tool calls that ended successfully
+        # Check both procedures table (legacy) and workflow memories to avoid duplicates
         sessions = conn.execute(text("""
             SELECT DISTINCT s.source_id, s.title,
                    count(seg.segment_id) as seg_count
@@ -1745,14 +1749,20 @@ def dream_extract_procedures(max_sessions=20):
                 WHERE :src = ANY(p.source_session_ids)
                 AND p.owner_tenant_id = :tid
             )
+            AND NOT EXISTS (
+                SELECT 1 FROM assistant_memories m
+                WHERE m.source_session_id = s.source_id
+                AND m.memory_type = 'workflow'
+                AND m.owner_tenant_id = :tid
+            )
             GROUP BY s.source_id, s.title
             HAVING count(seg.segment_id) >= 6
             ORDER BY max(seg.created_at) DESC
             LIMIT :lim
         """), {"tid": TENANT, "src": "source_id", "lim": max_sessions}).fetchall()
 
-        log.info(f"  Analyzing {len(sessions)} sessions for procedures")
-        procedures_created = 0
+        log.info(f"  Analyzing {len(sessions)} sessions for workflows")
+        workflows_created = 0
 
         for source_id, title, seg_count in sessions:
             if should_stop():
@@ -1770,98 +1780,88 @@ def dream_extract_procedures(max_sessions=20):
             if len(segments) < 6:
                 continue
 
-            # Build context for LLM
+            # Build context for LLM - simpler prompt for workflow description
             context = "\n".join([
-                f"[{seg.segment_type}] {seg.text[:300]}"
+                f"[{seg.segment_type}] {seg.text[:200]}"
                 for seg in segments
             ])
 
-            prompt = f"""Analyze this conversation for a reusable procedure/workflow:
+            prompt = f"""Analyze this session and describe the workflow pattern:
 
 SESSION: {title or source_id}
 {context[:3000]}
 
-If this represents a repeatable procedure, extract it as JSON:
-{{
-  "name": "short_procedure_name",
-  "description": "what this accomplishes",
-  "category": "deployment|debugging|configuration|maintenance|recovery|setup",
-  "steps": [
-    {{"order": 1, "action": "description of step", "command": "optional command"}}
-  ],
-  "preconditions": ["required state before starting"],
-  "parameters": [{{"name": "param_name", "type": "string", "description": "..."}}]
-}}
+If this represents a repeatable workflow, describe it in 2-3 sentences:
+- What is the goal/purpose?
+- What are the key steps involved?
+- What category is it? (deployment, debugging, configuration, maintenance, recovery, setup)
 
-If this is NOT a reusable procedure (one-off task, general chat), output: null"""
+Focus on the pattern, not specific values. If this is NOT a reusable workflow (one-off task, general chat), respond with: NOT_WORKFLOW
 
-            response = call_vllm(prompt, max_tokens=1000)
-            if not response or 'null' in response.lower():
+Workflow description:"""
+
+            response = call_vllm(prompt, max_tokens=300)
+            if not response or 'NOT_WORKFLOW' in response.upper():
+                continue
+
+            workflow_text = response.strip()
+            if len(workflow_text) < 30:
                 continue
 
             try:
-                # Parse procedure JSON
-                import re
-                match = re.search(r'\{.*\}', response, re.DOTALL)
-                if not match:
-                    continue
-
-                proc = json.loads(match.group())
-                if not proc or not proc.get("name") or not proc.get("steps"):
-                    continue
+                # Format as workflow memory
+                workflow_text = f"Workflow pattern: {workflow_text}"
 
                 # Generate embedding
-                canonical = f"{proc['name']}: {proc.get('description', '')}. Steps: " + \
-                    ", ".join(s.get("action", "") for s in proc.get("steps", []))
-                emb = embed_text_sync(canonical[:2000])
+                emb = embed_text_sync(workflow_text[:2000])
                 vec = "[" + ",".join(str(v) for v in emb) + "]"
 
-                # Check for existing similar procedure
+                # Check for similar existing workflow memory (will consolidate anyway, but skip near-duplicates)
                 existing = conn.execute(text("""
-                    SELECT procedure_id, name FROM procedures
+                    SELECT memory_id, 1 - (embedding <=> CAST(:vec AS vector)) as similarity
+                    FROM assistant_memories
                     WHERE owner_tenant_id = :tid
+                    AND memory_type = 'workflow'
                     AND status = 'active'
-                    AND LOWER(name) = LOWER(:name)
-                """), {"tid": TENANT, "name": proc["name"]}).fetchone()
+                    AND embedding IS NOT NULL
+                    ORDER BY embedding <=> CAST(:vec AS vector)
+                    LIMIT 1
+                """), {"vec": vec, "tid": TENANT}).fetchone()
 
-                if existing:
-                    # Update existing procedure
-                    conn.execute(text("""
-                        UPDATE procedures SET
-                            execution_count = execution_count + 1,
-                            source_session_ids = array_append(source_session_ids, :sid),
-                            updated_at = NOW()
-                        WHERE procedure_id = :pid
-                    """), {"pid": existing.procedure_id, "sid": source_id})
-                else:
-                    # Create new procedure
-                    proc_id = gen_id("PROC", f"{TENANT}_{proc['name']}")
-                    conn.execute(text("""
-                        INSERT INTO procedures
-                        (procedure_id, owner_tenant_id, name, description, category,
-                         steps, preconditions, parameters, embedding, canonical_text,
-                         source_session_ids, confidence)
-                        VALUES (:pid, :tid, :name, :desc, :cat, :steps, :pre, :params,
-                                CAST(:vec AS vector), :canon, ARRAY[:sid], 0.6)
-                    """), {
-                        "pid": proc_id, "tid": TENANT,
-                        "name": proc["name"], "desc": proc.get("description", ""),
-                        "cat": proc.get("category", "general"),
-                        "steps": json.dumps(proc.get("steps", [])),
-                        "pre": json.dumps(proc.get("preconditions", [])),
-                        "params": json.dumps(proc.get("parameters", [])),
-                        "vec": vec, "canon": canonical, "sid": source_id,
-                    })
-                    procedures_created += 1
-                    log.info(f"    Created procedure: {proc['name']}")
+                # Skip if very similar workflow already exists (will consolidate naturally)
+                if existing and existing.similarity > 0.85:
+                    log.debug(f"    Skipping similar workflow (sim={existing.similarity:.2f})")
+                    continue
+
+                # Create workflow memory
+                memory_id = gen_id("MEM", f"workflow_{source_id}")
+                conn.execute(text("""
+                    INSERT INTO assistant_memories
+                    (memory_id, owner_tenant_id, normalized_text, memory_type,
+                     embedding, importance_score, source_session_id, status, created_at)
+                    VALUES (:mid, :tid, :txt, 'workflow',
+                            CAST(:vec AS vector), 0.6, :sid, 'active', NOW())
+                    ON CONFLICT (memory_id) DO NOTHING
+                """), {
+                    "mid": memory_id, "tid": TENANT, "txt": workflow_text,
+                    "vec": vec, "sid": source_id,
+                })
+                workflows_created += 1
+                log.info(f"    Created workflow memory from: {title or source_id[:30]}")
 
             except Exception as e:
-                log.warning(f"  Procedure extraction error for {source_id}: {e}")
+                log.warning(f"  Workflow extraction error for {source_id}: {e}")
 
             conn.commit()
 
-        log.info(f"  Created {procedures_created} new procedures")
-        return {"sessions_analyzed": len(sessions), "procedures_created": procedures_created}
+        log.info(f"  Created {workflows_created} workflow memories")
+        return {"sessions_analyzed": len(sessions), "workflows_created": workflows_created}
+
+
+# Legacy alias for backward compatibility - calls new workflow extraction
+def dream_extract_procedures(max_sessions=20):
+    """Legacy alias - now extracts workflow memories instead of rigid procedures."""
+    return dream_extract_workflows(max_sessions)
 
 
 def dream_trust():

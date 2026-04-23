@@ -146,43 +146,76 @@ class MultiIndexRetriever:
         tenant_ids: List[str],
         limit: int,
     ) -> List[IndexResult]:
-        """Query procedures table."""
-        result = await db.execute(text("""
-            SELECT procedure_id, name, description, category, steps,
-                   success_rate, confidence,
-                   embedding <=> CAST(:vec AS vector) AS distance
-            FROM procedures
-            WHERE owner_tenant_id = ANY(:tids)
-            AND status = 'active'
-            AND embedding IS NOT NULL
-            ORDER BY embedding <=> CAST(:vec AS vector)
-            LIMIT :lim
-        """), {"vec": vec_str, "tids": tenant_ids, "lim": limit})
-
+        """Query workflow memories (primary) and legacy procedures (fallback)."""
         results = []
-        for r in result.fetchall():
-            # Format steps for display
-            steps_text = ""
-            if r.steps:
-                import json
-                steps = json.loads(r.steps) if isinstance(r.steps, str) else r.steps
-                if isinstance(steps, list):
-                    steps_text = "\n".join(
-                        f"{i+1}. {s.get('action', s)}"
-                        for i, s in enumerate(steps[:5])
-                    )
 
-            results.append(IndexResult(
-                item_id=r.procedure_id,
-                item_type="procedure",
-                text=f"**{r.name}**\n{r.description or ''}\n\nSteps:\n{steps_text}",
-                score=max(0, 1.0 - float(r.distance)) * float(r.confidence or 0.5),
-                index_source=IndexType.PROCEDURES,
-                metadata={
-                    "category": r.category,
-                    "success_rate": float(r.success_rate) if r.success_rate else 0.5,
-                },
-            ))
+        # Primary: Query workflow memories
+        try:
+            mem_result = await db.execute(text("""
+                SELECT memory_id, normalized_text, importance_score,
+                       embedding <=> CAST(:vec AS vector) AS distance
+                FROM assistant_memories
+                WHERE owner_tenant_id = ANY(:tids)
+                AND memory_type = 'workflow'
+                AND status = 'active'
+                AND embedding IS NOT NULL
+                ORDER BY embedding <=> CAST(:vec AS vector)
+                LIMIT :lim
+            """), {"vec": vec_str, "tids": tenant_ids, "lim": limit})
+
+            for r in mem_result.fetchall():
+                results.append(IndexResult(
+                    item_id=r.memory_id,
+                    item_type="workflow",
+                    text=r.normalized_text,
+                    score=max(0, 1.0 - float(r.distance)) * float(r.importance_score or 0.5),
+                    index_source=IndexType.PROCEDURES,
+                    metadata={"source": "workflow_memory"},
+                ))
+        except Exception as e:
+            logger.debug(f"Workflow memory query failed: {e}")
+
+        # Fallback: Query legacy procedures if we need more results
+        if len(results) < limit:
+            try:
+                proc_result = await db.execute(text("""
+                    SELECT procedure_id, name, description, category, steps,
+                           success_rate, confidence,
+                           embedding <=> CAST(:vec AS vector) AS distance
+                    FROM procedures
+                    WHERE owner_tenant_id = ANY(:tids)
+                    AND status = 'active'
+                    AND embedding IS NOT NULL
+                    ORDER BY embedding <=> CAST(:vec AS vector)
+                    LIMIT :lim
+                """), {"vec": vec_str, "tids": tenant_ids, "lim": limit - len(results)})
+
+                for r in proc_result.fetchall():
+                    # Format steps for display
+                    steps_text = ""
+                    if r.steps:
+                        import json
+                        steps = json.loads(r.steps) if isinstance(r.steps, str) else r.steps
+                        if isinstance(steps, list):
+                            steps_text = "\n".join(
+                                f"{i+1}. {s.get('action', s)}"
+                                for i, s in enumerate(steps[:5])
+                            )
+
+                    results.append(IndexResult(
+                        item_id=r.procedure_id,
+                        item_type="procedure",
+                        text=f"**{r.name}**\n{r.description or ''}\n\nSteps:\n{steps_text}",
+                        score=max(0, 1.0 - float(r.distance)) * float(r.confidence or 0.5),
+                        index_source=IndexType.PROCEDURES,
+                        metadata={
+                            "category": r.category,
+                            "success_rate": float(r.success_rate) if r.success_rate else 0.5,
+                            "source": "legacy_procedure",
+                        },
+                    ))
+            except Exception as e:
+                logger.debug(f"Legacy procedures query failed: {e}")
 
         return results
 
