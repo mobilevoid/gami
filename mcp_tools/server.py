@@ -157,25 +157,92 @@ async def _memory_recall(args: dict) -> dict:
 
 
 async def _memory_remember(args: dict) -> dict:
-    """Store a new assistant memory."""
+    """Store a new assistant memory with Mem0-style consolidation.
+
+    If consolidation is enabled (default), classifies the memory as:
+    - ADD: Store as new memory
+    - UPDATE: Update existing similar memory
+    - NOOP: Skip storage (duplicate detected)
+    """
     from api.llm.embeddings import embed_text
     from api.services.db import AsyncSessionLocal
+    from api.config import settings
 
     text_content = args["text"]
     memory_type = args.get("memory_type", "fact")
     subject_id = args.get("subject_id", "general")
     tenant_id = args.get("tenant_id", "claude-opus")
     importance = args.get("importance", 0.5)
-
-    # Embed the memory
-    embedding = await embed_text(text_content)
-    vec_str = "[" + ",".join(str(v) for v in embedding) + "]"
-
-    memory_id = f"MEM_{uuid.uuid4().hex[:16]}"
-    now = datetime.now(timezone.utc)
+    skip_consolidation = args.get("skip_consolidation", False)
+    agent_id = args.get("agent_id")
 
     async with AsyncSessionLocal() as db:
         from sqlalchemy import text as sql_text
+
+        # Memory consolidation (if enabled)
+        if settings.MEMORY_CONSOLIDATION_ENABLED and not skip_consolidation:
+            try:
+                from api.services.memory_classifier import (
+                    MemoryOperationClassifier,
+                    OperationType,
+                    log_memory_operation,
+                )
+
+                classifier = MemoryOperationClassifier()
+                operation = await classifier.classify(
+                    text_content, tenant_id, db, memory_type, subject_id
+                )
+
+                # Handle NOOP (duplicate)
+                if operation.type == OperationType.NOOP:
+                    await log_memory_operation(
+                        db, operation, tenant_id, agent_id
+                    )
+                    await db.commit()
+                    return {
+                        "status": "noop",
+                        "reason": operation.reason,
+                        "existing_memory_id": operation.target_id,
+                        "similarity": operation.similarity,
+                        "tenant_id": tenant_id,
+                    }
+
+                # Handle UPDATE (supersede existing)
+                if operation.type == OperationType.UPDATE:
+                    # Use existing update logic
+                    result = await _memory_update({
+                        "memory_id": operation.target_id,
+                        "new_text": text_content,
+                        "reason": operation.reason,
+                    })
+                    await log_memory_operation(
+                        db, operation, tenant_id, agent_id,
+                        result_memory_id=result.get("new_memory_id")
+                    )
+                    await db.commit()
+                    return {
+                        "status": "updated",
+                        "reason": operation.reason,
+                        "old_memory_id": operation.target_id,
+                        "new_memory_id": result.get("new_memory_id"),
+                        "similarity": operation.similarity,
+                        "tenant_id": tenant_id,
+                    }
+
+                # Log ADD operation (will be executed below)
+                await log_memory_operation(
+                    db, operation, tenant_id, agent_id
+                )
+
+            except Exception as e:
+                logger.warning(f"Memory consolidation failed: {e}, proceeding with ADD")
+
+        # Standard ADD flow
+        embedding = await embed_text(text_content)
+        vec_str = "[" + ",".join(str(v) for v in embedding) + "]"
+
+        memory_id = f"MEM_{uuid.uuid4().hex[:16]}"
+        now = datetime.now(timezone.utc)
 
         await db.execute(
             sql_text(
@@ -1386,6 +1453,71 @@ async def _memory_feedback(args: dict) -> dict:
     }
 
 
+async def _memory_suggest_procedure(args: dict) -> dict:
+    """Suggest relevant learned procedures for a task.
+
+    Searches the procedures table for workflows that match the query
+    and returns them with their steps and parameters.
+    """
+    from api.llm.embeddings import embed_text
+    from api.services.db import AsyncSessionLocal
+    from sqlalchemy import text as sql_text
+
+    query = args["query"]
+    context = args.get("context", "")
+    tenant_id = args.get("tenant_id", "claude-opus")
+    limit = args.get("limit", 3)
+    min_confidence = args.get("min_confidence", 0.4)
+
+    # Combine query and context for embedding
+    search_text = f"{query} {context}".strip()
+    embedding = await embed_text(search_text)
+    vec_str = "[" + ",".join(str(v) for v in embedding) + "]"
+
+    async with AsyncSessionLocal() as db:
+        # Vector search with confidence filter
+        rows = await db.execute(
+            sql_text("""
+                SELECT procedure_id, name, description, category,
+                       steps, parameters, preconditions, postconditions,
+                       success_rate, execution_count, confidence,
+                       1 - (embedding <=> CAST(:vec AS vector)) as similarity
+                FROM procedures
+                WHERE owner_tenant_id = :tid
+                AND status = 'active'
+                AND confidence >= :min_conf
+                AND embedding IS NOT NULL
+                ORDER BY embedding <=> CAST(:vec AS vector)
+                LIMIT :lim
+            """),
+            {"vec": vec_str, "tid": tenant_id, "min_conf": min_confidence, "lim": limit},
+        )
+
+        procedures = []
+        for r in rows.fetchall():
+            procedures.append({
+                "procedure_id": r.procedure_id,
+                "name": r.name,
+                "description": r.description,
+                "category": r.category,
+                "steps": r.steps,
+                "parameters": r.parameters,
+                "preconditions": r.preconditions,
+                "postconditions": r.postconditions,
+                "success_rate": float(r.success_rate) if r.success_rate else 0.5,
+                "executions": r.execution_count,
+                "confidence": float(r.confidence) if r.confidence else 0.5,
+                "similarity": float(r.similarity),
+            })
+
+    return {
+        "query": query,
+        "procedures": procedures,
+        "total": len(procedures),
+        "message": f"Found {len(procedures)} matching procedures" if procedures else "No matching procedures found",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Handler map
 # ---------------------------------------------------------------------------
@@ -1409,6 +1541,7 @@ TOOL_HANDLERS = {
     "dream_haiku": _dream_haiku,
     "memory_correct": _memory_correct,
     "memory_feedback": _memory_feedback,
+    "memory_suggest_procedure": _memory_suggest_procedure,
 }
 
 

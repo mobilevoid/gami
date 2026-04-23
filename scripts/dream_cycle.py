@@ -41,7 +41,7 @@ logging.basicConfig(
 log = logging.getLogger("dream")
 
 engine = create_engine(settings.DATABASE_URL_SYNC, pool_size=3)
-ALL_TENANTS = ["claude-opus", "books", "dene-websites"]
+ALL_TENANTS = ["claude-opus", "clawd", "shared", "openclaw", "clawdbot", "agent-zero"]
 TENANT = "claude-opus"  # Default, rotated each cycle
 STOP_FLAG = False
 
@@ -1594,6 +1594,276 @@ def dream_consolidate():
         return {"error": str(e)}
 
 
+# ============================================================
+# Phase: Lossless Compression
+# ============================================================
+def dream_compress(max_clusters=50):
+    """Phase: Extract unique facts (deltas) from clustered segments.
+
+    LOSSLESS: Original text is NEVER deleted, only tracked separately.
+    For each segment in a cluster with abstraction:
+    1. Compare segment to cluster abstraction
+    2. Extract facts in segment NOT covered by abstraction
+    3. Store as delta (unique facts)
+    4. Track compression status
+    """
+    log.info("=== Dream Phase: Lossless Compression ===")
+
+    with engine.connect() as conn:
+        # Find clusters with abstractions
+        clusters = conn.execute(text("""
+            SELECT cluster_id, abstraction_text, member_ids
+            FROM memory_clusters
+            WHERE status = 'active'
+            AND abstraction_text IS NOT NULL
+            AND array_length(member_ids, 1) >= 3
+            ORDER BY updated_at DESC
+            LIMIT :lim
+        """), {"lim": max_clusters}).fetchall()
+
+        log.info(f"  Processing {len(clusters)} clusters for compression")
+        compressed = 0
+        deltas_created = 0
+
+        for cluster_id, abstraction, member_ids in clusters:
+            if should_stop():
+                break
+
+            # Get unprocessed members
+            segments = conn.execute(text("""
+                SELECT s.segment_id, s.text
+                FROM segments s
+                LEFT JOIN segment_compression_status scs ON s.segment_id = scs.segment_id
+                WHERE s.segment_id = ANY(:ids)
+                AND (scs.compression_status IS NULL OR scs.compression_status = 'raw')
+            """), {"ids": member_ids}).fetchall()
+
+            for seg_id, seg_text in segments:
+                if should_stop():
+                    break
+
+                # Extract unique facts via LLM
+                prompt = f"""Compare the ORIGINAL text to the SUMMARY. Extract ONLY facts in ORIGINAL that are NOT in SUMMARY.
+
+SUMMARY:
+{abstraction[:1500]}
+
+ORIGINAL:
+{seg_text[:1500]}
+
+Output a JSON array of unique facts (empty array if fully covered):
+[{{"fact": "specific detail not in summary", "importance": 0.0-1.0, "category": "credential|config|entity|event|preference"}}]
+
+JSON array:"""
+
+                response = call_vllm(prompt, max_tokens=800)
+                if not response:
+                    continue
+
+                try:
+                    # Parse JSON response
+                    facts = []
+                    if response.strip().startswith('['):
+                        try:
+                            facts = json.loads(response.strip())
+                        except json.JSONDecodeError:
+                            # Try to find JSON array in response
+                            import re
+                            match = re.search(r'\[.*\]', response, re.DOTALL)
+                            if match:
+                                facts = json.loads(match.group())
+
+                    delta_id = None
+                    if facts and isinstance(facts, list):
+                        # Store delta
+                        facts_text = " | ".join(f.get("fact", "") for f in facts if isinstance(f, dict))
+                        total_importance = sum(f.get("importance", 0.5) for f in facts if isinstance(f, dict))
+
+                        emb = embed_text_sync(facts_text[:2000]) if facts_text else None
+                        vec = "[" + ",".join(str(v) for v in emb) + "]" if emb else None
+
+                        delta_id = gen_id("DELTA", f"{seg_id}_{cluster_id}")
+                        conn.execute(text("""
+                            INSERT INTO compression_deltas
+                            (delta_id, segment_id, cluster_id, unique_facts, unique_facts_text,
+                             embedding, fact_count, total_importance)
+                            VALUES (:did, :sid, :cid, :facts, :txt, CAST(:vec AS vector), :cnt, :imp)
+                            ON CONFLICT (delta_id) DO UPDATE SET
+                                unique_facts = :facts, unique_facts_text = :txt
+                        """), {
+                            "did": delta_id, "sid": seg_id, "cid": cluster_id,
+                            "facts": json.dumps(facts), "txt": facts_text,
+                            "vec": vec, "cnt": len(facts), "imp": total_importance,
+                        })
+                        deltas_created += 1
+
+                    # Track compression status (separate table since we can't modify segments)
+                    status = 'compressed' if facts else 'abstracted'
+                    conn.execute(text("""
+                        INSERT INTO segment_compression_status (segment_id, compression_status, delta_id, cluster_id)
+                        VALUES (:sid, :status, :did, :cid)
+                        ON CONFLICT (segment_id) DO UPDATE SET
+                            compression_status = :status, delta_id = :did, processed_at = NOW()
+                    """), {"sid": seg_id, "status": status, "did": delta_id, "cid": cluster_id})
+
+                    compressed += 1
+
+                except Exception as e:
+                    log.warning(f"  Compression error for {seg_id}: {e}")
+
+            conn.commit()
+
+        log.info(f"  Compressed {compressed} segments, created {deltas_created} deltas")
+        return {"segments_compressed": compressed, "deltas_created": deltas_created}
+
+
+# ============================================================
+# Phase: Procedure Extraction (Hermes-style)
+# ============================================================
+def dream_extract_procedures(max_sessions=20):
+    """Phase: Extract reusable procedures from successful multi-step sessions.
+
+    Analyzes conversation sessions for:
+    1. Multi-step command sequences
+    2. Repeated patterns across sessions
+    3. Successful troubleshooting flows
+    """
+    log.info("=== Dream Phase: Procedure Extraction ===")
+
+    with engine.connect() as conn:
+        # Find sessions with multiple tool calls that ended successfully
+        sessions = conn.execute(text("""
+            SELECT DISTINCT s.source_id, s.title,
+                   count(seg.segment_id) as seg_count
+            FROM sources s
+            JOIN segments seg ON s.source_id = seg.source_id
+            WHERE s.owner_tenant_id = :tid
+            AND s.source_type IN ('conversation_session', 'transcript')
+            AND seg.segment_type IN ('tool_call', 'tool_result', 'assistant')
+            AND NOT EXISTS (
+                SELECT 1 FROM procedures p
+                WHERE :src = ANY(p.source_session_ids)
+                AND p.owner_tenant_id = :tid
+            )
+            GROUP BY s.source_id, s.title
+            HAVING count(seg.segment_id) >= 6
+            ORDER BY max(seg.created_at) DESC
+            LIMIT :lim
+        """), {"tid": TENANT, "src": "source_id", "lim": max_sessions}).fetchall()
+
+        log.info(f"  Analyzing {len(sessions)} sessions for procedures")
+        procedures_created = 0
+
+        for source_id, title, seg_count in sessions:
+            if should_stop():
+                break
+
+            # Get session segments
+            segments = conn.execute(text("""
+                SELECT text, segment_type FROM segments
+                WHERE source_id = :sid
+                AND segment_type IN ('tool_call', 'tool_result', 'assistant', 'user')
+                ORDER BY ordinal
+                LIMIT 30
+            """), {"sid": source_id}).fetchall()
+
+            if len(segments) < 6:
+                continue
+
+            # Build context for LLM
+            context = "\n".join([
+                f"[{seg.segment_type}] {seg.text[:300]}"
+                for seg in segments
+            ])
+
+            prompt = f"""Analyze this conversation for a reusable procedure/workflow:
+
+SESSION: {title or source_id}
+{context[:3000]}
+
+If this represents a repeatable procedure, extract it as JSON:
+{{
+  "name": "short_procedure_name",
+  "description": "what this accomplishes",
+  "category": "deployment|debugging|configuration|maintenance|recovery|setup",
+  "steps": [
+    {{"order": 1, "action": "description of step", "command": "optional command"}}
+  ],
+  "preconditions": ["required state before starting"],
+  "parameters": [{{"name": "param_name", "type": "string", "description": "..."}}]
+}}
+
+If this is NOT a reusable procedure (one-off task, general chat), output: null"""
+
+            response = call_vllm(prompt, max_tokens=1000)
+            if not response or 'null' in response.lower():
+                continue
+
+            try:
+                # Parse procedure JSON
+                import re
+                match = re.search(r'\{.*\}', response, re.DOTALL)
+                if not match:
+                    continue
+
+                proc = json.loads(match.group())
+                if not proc or not proc.get("name") or not proc.get("steps"):
+                    continue
+
+                # Generate embedding
+                canonical = f"{proc['name']}: {proc.get('description', '')}. Steps: " + \
+                    ", ".join(s.get("action", "") for s in proc.get("steps", []))
+                emb = embed_text_sync(canonical[:2000])
+                vec = "[" + ",".join(str(v) for v in emb) + "]"
+
+                # Check for existing similar procedure
+                existing = conn.execute(text("""
+                    SELECT procedure_id, name FROM procedures
+                    WHERE owner_tenant_id = :tid
+                    AND status = 'active'
+                    AND LOWER(name) = LOWER(:name)
+                """), {"tid": TENANT, "name": proc["name"]}).fetchone()
+
+                if existing:
+                    # Update existing procedure
+                    conn.execute(text("""
+                        UPDATE procedures SET
+                            execution_count = execution_count + 1,
+                            source_session_ids = array_append(source_session_ids, :sid),
+                            updated_at = NOW()
+                        WHERE procedure_id = :pid
+                    """), {"pid": existing.procedure_id, "sid": source_id})
+                else:
+                    # Create new procedure
+                    proc_id = gen_id("PROC", f"{TENANT}_{proc['name']}")
+                    conn.execute(text("""
+                        INSERT INTO procedures
+                        (procedure_id, owner_tenant_id, name, description, category,
+                         steps, preconditions, parameters, embedding, canonical_text,
+                         source_session_ids, confidence)
+                        VALUES (:pid, :tid, :name, :desc, :cat, :steps, :pre, :params,
+                                CAST(:vec AS vector), :canon, ARRAY[:sid], 0.6)
+                    """), {
+                        "pid": proc_id, "tid": TENANT,
+                        "name": proc["name"], "desc": proc.get("description", ""),
+                        "cat": proc.get("category", "general"),
+                        "steps": json.dumps(proc.get("steps", [])),
+                        "pre": json.dumps(proc.get("preconditions", [])),
+                        "params": json.dumps(proc.get("parameters", [])),
+                        "vec": vec, "canon": canonical, "sid": source_id,
+                    })
+                    procedures_created += 1
+                    log.info(f"    Created procedure: {proc['name']}")
+
+            except Exception as e:
+                log.warning(f"  Procedure extraction error for {source_id}: {e}")
+
+            conn.commit()
+
+        log.info(f"  Created {procedures_created} new procedures")
+        return {"sessions_analyzed": len(sessions), "procedures_created": procedures_created}
+
+
 def dream_trust():
     """Phase: Update agent trust scores based on claim verification."""
     log.info("=== Dream Phase: Agent Trust Scoring ===")
@@ -1662,6 +1932,9 @@ def dream(duration=None, phase=None, check_idle=False):
         ("learning", dream_learning),
         ("causal", dream_causal),
         ("consolidate", dream_consolidate),
+        # Enhancement phases (must run after consolidate)
+        ("compress", dream_compress),
+        ("extract_procedures", dream_extract_procedures),
         ("trust", dream_trust),
     ]
 

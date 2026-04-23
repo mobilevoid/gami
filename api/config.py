@@ -54,5 +54,17 @@ class Settings:
     API_KEY: str = os.getenv("GAMI_API_KEY", "")  # Empty = auth disabled
     REQUIRE_AUTH_FOR_AGENTS: bool = os.getenv("GAMI_REQUIRE_AUTH_FOR_AGENTS", "false").lower() == "true"
 
+    # Cross-Encoder Reranking
+    RERANKER_ENABLED: bool = os.getenv("GAMI_RERANKER_ENABLED", "true").lower() == "true"
+    RERANKER_MODEL: str = os.getenv("GAMI_RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+    RERANKER_TOP_K: int = int(os.getenv("GAMI_RERANKER_TOP_K", "50"))
+    RERANKER_FINAL_K: int = int(os.getenv("GAMI_RERANKER_FINAL_K", "15"))
+    RERANKER_BLEND_RATIO: float = float(os.getenv("GAMI_RERANKER_BLEND_RATIO", "0.7"))
+
+    # Memory Consolidation (Mem0-style)
+    MEMORY_CONSOLIDATION_ENABLED: bool = os.getenv("GAMI_MEMORY_CONSOLIDATION_ENABLED", "true").lower() == "true"
+    MEMORY_SIMILAR_THRESHOLD: float = float(os.getenv("GAMI_MEMORY_SIMILAR_THRESHOLD", "0.75"))
+    MEMORY_EXACT_THRESHOLD: float = float(os.getenv("GAMI_MEMORY_EXACT_THRESHOLD", "0.95"))
+
 
 settings = Settings()

@@ -658,6 +658,23 @@ async def recall(
             )
             evidence_items.append(item)
 
+        # 4b. Cross-encoder reranking (if enabled)
+        from api.config import settings
+        if settings.RERANKER_ENABLED and len(evidence_items) > settings.RERANKER_FINAL_K:
+            try:
+                from api.search.reranker import CrossEncoderReranker
+                reranker = CrossEncoderReranker(blend_ratio=settings.RERANKER_BLEND_RATIO)
+                if reranker.is_available():
+                    # Take top candidates for reranking
+                    evidence_items.sort(key=lambda x: -x.score)
+                    to_rerank = evidence_items[:settings.RERANKER_TOP_K]
+                    evidence_items = reranker.rerank_evidence(
+                        query, to_rerank, top_n=settings.RERANKER_FINAL_K
+                    )
+                    logger.debug(f"Reranked {len(to_rerank)} items to {len(evidence_items)}")
+            except Exception as e:
+                logger.warning(f"Reranking failed, using original order: {e}")
+
         # 5. Apply token budget
         budget = ContextBudget(max_tokens=max_tokens)
         selected = budget.rank_and_fill(evidence_items)

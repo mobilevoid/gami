@@ -36,6 +36,12 @@ TOOL_DEFINITIONS = {
                     "minimum": 100,
                     "maximum": 16000,
                 },
+                "detail_level": {
+                    "type": "string",
+                    "description": "Level of detail: summary (abstractions only), normal (+ important deltas), full (original text)",
+                    "enum": ["summary", "normal", "full"],
+                    "default": "normal",
+                },
             },
             "required": ["query"],
         },
@@ -79,6 +85,11 @@ TOOL_DEFINITIONS = {
                     "default": 0.5,
                     "minimum": 0.0,
                     "maximum": 1.0,
+                },
+                "skip_consolidation": {
+                    "type": "boolean",
+                    "description": "Skip duplicate detection (force ADD)",
+                    "default": False,
                 },
             },
             "required": ["text"],
@@ -561,6 +572,47 @@ TOOL_DEFINITIONS = {
                 },
             },
             "required": ["session_id", "feedback_type"],
+        },
+    },
+    "memory_suggest_procedure": {
+        "name": "memory_suggest_procedure",
+        "description": (
+            "Suggest relevant learned procedures based on the current task or query. "
+            "Returns matching procedures with their steps and parameters. "
+            "Use when the user is attempting a task that might match a known procedure."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Description of what the user is trying to accomplish",
+                },
+                "context": {
+                    "type": "string",
+                    "description": "Current conversation context or error message",
+                },
+                "tenant_id": {
+                    "type": "string",
+                    "description": "Tenant ID",
+                    "default": "claude-opus",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum procedures to return",
+                    "default": 3,
+                    "minimum": 1,
+                    "maximum": 10,
+                },
+                "min_confidence": {
+                    "type": "number",
+                    "description": "Minimum procedure confidence",
+                    "default": 0.4,
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                },
+            },
+            "required": ["query"],
         },
     },
 }
