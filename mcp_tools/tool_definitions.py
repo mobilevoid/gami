@@ -42,6 +42,26 @@ TOOL_DEFINITIONS = {
                     "enum": ["summary", "normal", "full"],
                     "default": "normal",
                 },
+                "event_after": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "Filter: only return events that happened after this ISO timestamp",
+                },
+                "event_before": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "Filter: only return events that happened before this ISO timestamp",
+                },
+                "ingested_after": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "Filter: only return content ingested after this ISO timestamp",
+                },
+                "ingested_before": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "Filter: only return content ingested before this ISO timestamp",
+                },
             },
             "required": ["query"],
         },

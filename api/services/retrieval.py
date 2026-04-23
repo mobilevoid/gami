@@ -115,6 +115,17 @@ class EvidenceResult(BaseModel):
     metadata: dict = {}
 
 
+class ContradictionResult(BaseModel):
+    """Information about detected contradictions."""
+    group_id: str
+    predicate: str
+    claim_ids: list[str]
+    values: list[str]
+    confidences: list[float]
+    status: str  # unresolved, proposed, resolved
+    proposal_id: Optional[str] = None
+
+
 class RecallResult(BaseModel):
     """Full recall response."""
     query: str
@@ -127,6 +138,10 @@ class RecallResult(BaseModel):
     classification_ms: float = 0.0
     search_ms: float = 0.0
     total_ms: float = 0.0
+    # Phase 7: Contradiction awareness
+    has_contradictions: bool = False
+    contradictions: list[ContradictionResult] = []
+    needs_resolution: bool = False
 
 
 class VerifyResult(BaseModel):
@@ -237,6 +252,11 @@ async def recall(
     citation_level: CitationLevel = CitationLevel.BRIEF,
     session_id: Optional[str] = None,
     agent_id: Optional[str] = None,
+    # Phase 5: Bi-temporal query support
+    event_after: Optional[str] = None,
+    event_before: Optional[str] = None,
+    ingested_after: Optional[str] = None,
+    ingested_before: Optional[str] = None,
 ) -> RecallResult:
     """Full retrieval pipeline: classify, search, score, budget, cite.
 
@@ -248,6 +268,12 @@ async def recall(
         mode: Override query mode (skip classification).
         include_citations: Whether to attach citations.
         citation_level: Detail level for citations.
+        session_id: Optional session ID for tracking.
+        agent_id: Optional agent ID for tracking.
+        event_after: Filter to events that happened after this ISO timestamp.
+        event_before: Filter to events that happened before this ISO timestamp.
+        ingested_after: Filter to content ingested after this ISO timestamp.
+        ingested_before: Filter to content ingested before this ISO timestamp.
 
     Returns:
         RecallResult with ranked, budgeted evidence and context.
@@ -608,6 +634,67 @@ async def recall(
         # Filter noise from segments
         results = [r for r in results if len(r.get("text", "")) >= 50]
 
+        # Phase 5: Apply bi-temporal filtering
+        if event_after or event_before or ingested_after or ingested_before:
+            def _passes_temporal(r):
+                # Event time filtering (when the event actually happened)
+                event_time = r.get("event_time") or r.get("message_timestamp")
+                if event_time:
+                    if isinstance(event_time, str):
+                        try:
+                            event_time = datetime.fromisoformat(event_time.replace("Z", "+00:00"))
+                        except ValueError:
+                            event_time = None
+                    if event_time:
+                        if event_after:
+                            try:
+                                after_dt = datetime.fromisoformat(event_after.replace("Z", "+00:00"))
+                                if event_time < after_dt:
+                                    return False
+                            except ValueError:
+                                pass
+                        if event_before:
+                            try:
+                                before_dt = datetime.fromisoformat(event_before.replace("Z", "+00:00"))
+                                if event_time > before_dt:
+                                    return False
+                            except ValueError:
+                                pass
+                elif event_after or event_before:
+                    # If we need event filtering but have no event time, exclude
+                    return False
+
+                # Ingestion time filtering (when we learned about it)
+                created_at = r.get("created_at")
+                if created_at:
+                    if isinstance(created_at, str):
+                        try:
+                            created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                        except ValueError:
+                            created_at = None
+                    if created_at:
+                        if ingested_after:
+                            try:
+                                after_dt = datetime.fromisoformat(ingested_after.replace("Z", "+00:00"))
+                                if created_at < after_dt:
+                                    return False
+                            except ValueError:
+                                pass
+                        if ingested_before:
+                            try:
+                                before_dt = datetime.fromisoformat(ingested_before.replace("Z", "+00:00"))
+                                if created_at > before_dt:
+                                    return False
+                            except ValueError:
+                                pass
+                elif ingested_after or ingested_before:
+                    return False
+
+                return True
+
+            results = [r for r in results if _passes_temporal(r)]
+            logger.debug(f"After temporal filtering: {len(results)} results")
+
         # Score segment results
         for r in results:
             relevance, importance, recency = _compute_evidence_score(
@@ -775,6 +862,49 @@ async def recall(
     except Exception as pub_err:
         logger.debug(f"Event publish failed (non-critical): {pub_err}")
 
+    # Phase 7: Check for contradictions in returned claims/segments
+    contradiction_results: list[ContradictionResult] = []
+    has_contradictions = False
+    needs_resolution = False
+
+    async with AsyncSessionLocal() as db:
+        try:
+            from api.services.contradiction_service import ContradictionChecker
+
+            checker = ContradictionChecker()
+
+            # Collect claim and segment IDs from evidence
+            claim_ids = [e.item_id for e in evidence_results if e.item_type == "claim"]
+            segment_ids = [e.item_id for e in evidence_results if e.item_type == "segment"]
+
+            contradictions = await checker.check_for_contradictions(
+                db, claim_ids, segment_ids, tids
+            )
+
+            if contradictions:
+                has_contradictions = True
+                needs_resolution = any(c.status == "unresolved" for c in contradictions)
+
+                # Convert to result format
+                for c in contradictions:
+                    contradiction_results.append(ContradictionResult(
+                        group_id=c.contradiction_group_id,
+                        predicate=c.predicate,
+                        claim_ids=c.claim_ids,
+                        values=c.conflicting_values,
+                        confidences=c.confidence_scores,
+                        status=c.status,
+                        proposal_id=c.proposal_id,
+                    ))
+
+                # Append warning to context text
+                warning = checker.format_contradiction_warning(contradictions)
+                if warning:
+                    context_text = context_text + warning
+
+        except Exception as contra_err:
+            logger.warning(f"Contradiction check failed (non-critical): {contra_err}")
+
     return RecallResult(
         query=query,
         mode=classification.mode.value,
@@ -786,6 +916,9 @@ async def recall(
         classification_ms=round(classification_ms, 1),
         search_ms=round(search_ms, 1),
         total_ms=round(total_ms, 1),
+        has_contradictions=has_contradictions,
+        contradictions=contradiction_results,
+        needs_resolution=needs_resolution,
     )
 
 

@@ -126,6 +126,12 @@ async def _memory_recall(args: dict) -> dict:
     # Claude already knows what it's looking for; override with mode param if needed.
     mode = args.get("mode", "factual")
 
+    # Phase 5: Bi-temporal query support
+    event_after = args.get("event_after")
+    event_before = args.get("event_before")
+    ingested_after = args.get("ingested_after")
+    ingested_before = args.get("ingested_before")
+
     result = await recall(
         query=query,
         tenant_id=tenant_id,
@@ -134,6 +140,10 @@ async def _memory_recall(args: dict) -> dict:
         mode=mode,
         session_id=session_id,
         agent_id=agent_id,
+        event_after=event_after,
+        event_before=event_before,
+        ingested_after=ingested_after,
+        ingested_before=ingested_before,
     )
 
     # Format for MCP response
@@ -146,7 +156,7 @@ async def _memory_recall(args: dict) -> dict:
             "score": ev.effective_score,
         })
 
-    return {
+    response = {
         "context": result.context_text,
         "citations": citations,
         "total_tokens": result.total_tokens_used,
@@ -154,6 +164,25 @@ async def _memory_recall(args: dict) -> dict:
         "mode": result.mode,
         "search_ms": result.search_ms,
     }
+
+    # Phase 7: Include contradiction info
+    if result.has_contradictions:
+        response["has_contradictions"] = True
+        response["needs_resolution"] = result.needs_resolution
+        response["contradictions"] = [
+            {
+                "group_id": c.group_id,
+                "predicate": c.predicate,
+                "claim_ids": c.claim_ids,
+                "values": c.values,
+                "confidences": c.confidences,
+                "status": c.status,
+                "proposal_id": c.proposal_id,
+            }
+            for c in result.contradictions
+        ]
+
+    return response
 
 
 async def _memory_remember(args: dict) -> dict:

@@ -8,6 +8,8 @@ from .query_classifier_v2 import (
 from .manifold_fusion import ManifoldFusion, compute_anchor_score
 from .anchor_retrieval import AnchorRetriever, retrieve_anchors
 from .shadow_runner import ShadowRunner, run_shadow_comparison
+from .query_routing import QueryRouter, QueryRouting, IndexType, route_query
+from .multi_index_retriever import MultiIndexRetriever, IndexResult
 
 __all__ = [
     "QueryClassifierV2",
@@ -20,4 +22,10 @@ __all__ = [
     "retrieve_anchors",
     "ShadowRunner",
     "run_shadow_comparison",
+    "QueryRouter",
+    "QueryRouting",
+    "IndexType",
+    "route_query",
+    "MultiIndexRetriever",
+    "IndexResult",
 ]
