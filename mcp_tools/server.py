@@ -132,6 +132,9 @@ async def _memory_recall(args: dict) -> dict:
     ingested_after = args.get("ingested_after")
     ingested_before = args.get("ingested_before")
 
+    # Phase 3: Compression detail level
+    detail_level = args.get("detail_level", "normal")
+
     result = await recall(
         query=query,
         tenant_id=tenant_id,
@@ -144,6 +147,7 @@ async def _memory_recall(args: dict) -> dict:
         event_before=event_before,
         ingested_after=ingested_after,
         ingested_before=ingested_before,
+        detail_level=detail_level,
     )
 
     # Format for MCP response

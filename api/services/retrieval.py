@@ -46,6 +46,12 @@ from manifold.retrieval.query_router import (
     MANIFOLD_WEIGHT_PROFILES,
     QueryIntent,
 )
+from manifold.retrieval.query_routing import (
+    QueryRouter as GraphQueryRouter,
+    route_query as route_query_graph,
+    IndexType,
+)
+from manifold.retrieval.multi_index_retriever import MultiIndexRetriever
 
 logger = logging.getLogger("gami.services.retrieval")
 
@@ -257,6 +263,8 @@ async def recall(
     event_before: Optional[str] = None,
     ingested_after: Optional[str] = None,
     ingested_before: Optional[str] = None,
+    # Phase 3: Compression detail level
+    detail_level: str = "normal",
 ) -> RecallResult:
     """Full retrieval pipeline: classify, search, score, budget, cite.
 
@@ -274,6 +282,8 @@ async def recall(
         event_before: Filter to events that happened before this ISO timestamp.
         ingested_after: Filter to content ingested after this ISO timestamp.
         ingested_before: Filter to content ingested before this ISO timestamp.
+        detail_level: Level of detail - "summary" (abstractions only),
+                      "normal" (+ important deltas), "full" (original text).
 
     Returns:
         RecallResult with ranked, budgeted evidence and context.
@@ -745,7 +755,39 @@ async def recall(
             )
             evidence_items.append(item)
 
-        # 4b. Cross-encoder reranking (if enabled)
+        # 4e. Phase 6: Multi-index retrieval based on query routing
+        try:
+            graph_routing = route_query_graph(query)
+            if graph_routing.routing_confidence >= 0.6:
+                multi_retriever = MultiIndexRetriever()
+                index_results = await multi_retriever.retrieve(
+                    db, query, query_embedding, graph_routing, tids,
+                    limit_per_index=10,
+                )
+                # Convert IndexResult to EvidenceItem
+                for ir in index_results:
+                    evidence_items.append(EvidenceItem(
+                        item_id=ir.item_id,
+                        item_type=ir.item_type,
+                        text=ir.text,
+                        score=ir.score,
+                        importance=0.7,
+                        recency_score=0.5,
+                        token_count=count_tokens(ir.text),
+                        metadata={
+                            "index_source": ir.index_source.value,
+                            **ir.metadata,
+                        },
+                    ))
+                logger.debug(
+                    f"Multi-index retrieval added {len(index_results)} items "
+                    f"(routing: {graph_routing.primary_index.value}, "
+                    f"conf={graph_routing.routing_confidence:.2f})"
+                )
+        except Exception as mir_err:
+            logger.warning(f"Multi-index retrieval failed (non-critical): {mir_err}")
+
+        # 4f. Cross-encoder reranking (if enabled)
         from api.config import settings
         if settings.RERANKER_ENABLED and len(evidence_items) > settings.RERANKER_FINAL_K:
             try:
