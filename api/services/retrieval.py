@@ -265,6 +265,8 @@ async def recall(
     ingested_before: Optional[str] = None,
     # Phase 3: Compression detail level
     detail_level: str = "normal",
+    # Phase 9: True product manifold search
+    use_product_manifold: bool = False,
 ) -> RecallResult:
     """Full retrieval pipeline: classify, search, score, budget, cite.
 
@@ -621,23 +623,40 @@ async def recall(
             f"manifold_weights: {manifold_weights}"
         )
 
+        # Phase 9: Use true product manifold search (H^32 × S^16 × E^64) if enabled
+        results = []  # Initialize to avoid possibly unbound
+        if use_product_manifold:
+            try:
+                from api.search.hybrid import product_manifold_hybrid_search
+                results = await product_manifold_hybrid_search(
+                    db, query, query_embedding, tids,
+                    limit=search_limit,
+                    use_product_manifold=True,
+                    manifold_weight=0.4,
+                )
+                logger.info(f"Product manifold search returned {len(results)} results")
+            except Exception as pm_err:
+                logger.warning(f"Product manifold search failed: {pm_err}, falling back")
+                use_product_manifold = False  # Fall through to standard search
+
         # Try multi-manifold search first, fall back to traditional hybrid
-        try:
-            results = await hybrid_manifold_search(
-                db, query, query_embedding, tids,
-                manifold_weights=manifold_weights,
-                limit=search_limit,
-                vector_weight=0.4,  # Traditional search gets 40%
-                manifold_weight=0.6,  # Manifold search gets 60%
-            )
-        except Exception as manifold_err:
-            logger.warning(f"Manifold search failed, falling back to hybrid: {manifold_err}")
-            results = await hybrid_search(
-                db, query, query_embedding, tids,
-                limit=search_limit,
-                vector_weight=0.7,
-                lexical_weight=0.3,
-            )
+        if not use_product_manifold:
+            try:
+                results = await hybrid_manifold_search(
+                    db, query, query_embedding, tids,
+                    manifold_weights=manifold_weights,
+                    limit=search_limit,
+                    vector_weight=0.4,  # Traditional search gets 40%
+                    manifold_weight=0.6,  # Manifold search gets 60%
+                )
+            except Exception as manifold_err:
+                logger.warning(f"Manifold search failed, falling back to hybrid: {manifold_err}")
+                results = await hybrid_search(
+                    db, query, query_embedding, tids,
+                    limit=search_limit,
+                    vector_weight=0.7,
+                    lexical_weight=0.3,
+                )
 
         search_ms = (time.monotonic() - t_search) * 1000
 

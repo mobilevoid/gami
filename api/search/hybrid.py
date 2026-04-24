@@ -436,3 +436,150 @@ async def hybrid_manifold_search(
     sorted_results = sorted(merged.values(), key=lambda x: -x["combined_score"])
 
     return sorted_results[:limit]
+
+
+async def product_manifold_hybrid_search(
+    db: AsyncSession,
+    query: str,
+    query_embedding: list[float],
+    tenant_ids: list[str],
+    limit: int = 20,
+    use_product_manifold: bool = True,
+    manifold_weight: float = 0.4,
+    shadow_mode: bool = False,
+) -> list[dict]:
+    """Hybrid search with TRUE product manifold (H^32 × S^16 × E^64).
+
+    This uses the trained hyperbolic/spherical/Euclidean product space
+    for semantically and hierarchically aware retrieval.
+
+    Args:
+        db: Database session
+        query: Query text
+        query_embedding: 768d base embedding
+        tenant_ids: Tenant IDs to filter
+        limit: Maximum results
+        use_product_manifold: If True, try product manifold first
+        manifold_weight: Weight for manifold results (0-1)
+        shadow_mode: If True, run both and log comparison but return traditional
+
+    Returns:
+        List of search results with scores
+    """
+    from api.search.manifold_search import (
+        product_manifold_search_from_text,
+        ManifoldWeights,
+    )
+
+    # Traditional search (always run)
+    traditional_results = await hybrid_search(
+        db, query, query_embedding, tenant_ids,
+        limit=limit * 2,
+        vector_weight=0.7,
+        lexical_weight=0.3,
+    )
+
+    if not use_product_manifold:
+        return traditional_results[:limit]
+
+    # Try product manifold search
+    try:
+        manifold_results = await product_manifold_search_from_text(
+            db=db,
+            query=query,
+            tenant_ids=tenant_ids,
+            weights=ManifoldWeights(
+                hyperbolic=0.3,  # Hierarchy
+                spherical=0.2,   # Categories
+                euclidean=0.5,   # Semantic similarity
+            ),
+            limit=limit * 2,
+            prefilter_k=100,
+        )
+    except Exception as e:
+        logger.warning(f"Product manifold search failed: {e}, using traditional only")
+        return traditional_results[:limit]
+
+    # If no manifold results, fall back
+    if not manifold_results:
+        logger.debug("No product manifold results, using traditional search only")
+        return traditional_results[:limit]
+
+    # Shadow mode: log comparison, return traditional
+    if shadow_mode:
+        _log_shadow_comparison(query, traditional_results, manifold_results)
+        return traditional_results[:limit]
+
+    # Merge results
+    merged = _merge_product_manifold_results(
+        traditional_results,
+        manifold_results,
+        manifold_weight,
+    )
+
+    return merged[:limit]
+
+
+def _merge_product_manifold_results(
+    traditional: list[dict],
+    manifold: list,
+    manifold_weight: float,
+) -> list[dict]:
+    """Merge traditional and product manifold results."""
+    merged: dict[str, dict] = {}
+
+    # Add traditional results
+    for i, r in enumerate(traditional):
+        sid = r.get("segment_id", r.get("target_id", ""))
+        merged[sid] = {
+            **r,
+            "trad_rank": i,
+            "trad_score": r.get("combined_score", 1.0 / (i + 1)),
+            "manifold_score": 0.0,
+        }
+
+    # Add/merge manifold results
+    for i, r in enumerate(manifold):
+        sid = r.target_id if hasattr(r, "target_id") else r.get("target_id", "")
+        score = r.score if hasattr(r, "score") else r.get("score", 1.0 / (i + 1))
+
+        if sid in merged:
+            merged[sid]["manifold_score"] = score
+            merged[sid]["manifold_rank"] = i
+            merged[sid]["manifold_distance"] = getattr(r, "manifold_distance", None)
+        else:
+            text_val = r.text if hasattr(r, "text") else r.get("text", "")
+            merged[sid] = {
+                "segment_id": sid,
+                "text": text_val,
+                "trad_rank": len(traditional),
+                "trad_score": 0.0,
+                "manifold_score": score,
+                "manifold_rank": i,
+                "manifold_distance": getattr(r, "manifold_distance", None),
+            }
+
+    # Compute final score
+    for entry in merged.values():
+        trad = entry.get("trad_score", 0)
+        mani = entry.get("manifold_score", 0)
+        entry["combined_score"] = (1 - manifold_weight) * trad + manifold_weight * mani
+        entry["search_type"] = "product_manifold_hybrid"
+
+    # Sort by combined score
+    return sorted(merged.values(), key=lambda x: -x["combined_score"])
+
+
+def _log_shadow_comparison(query: str, traditional: list, manifold: list):
+    """Log comparison between traditional and manifold search for analysis."""
+    trad_ids = [r.get("segment_id", "") for r in traditional[:10]]
+    mani_ids = [r.target_id if hasattr(r, "target_id") else r.get("target_id", "")
+                for r in manifold[:10]]
+
+    overlap = set(trad_ids) & set(mani_ids)
+    logger.info(
+        f"Shadow comparison for '{query[:50]}...': "
+        f"top-10 overlap={len(overlap)}/10, "
+        f"trad_first={trad_ids[0] if trad_ids else 'none'}, "
+        f"manifold_first={mani_ids[0] if mani_ids else 'none'}"
+    )

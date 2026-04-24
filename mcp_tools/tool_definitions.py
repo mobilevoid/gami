@@ -62,6 +62,11 @@ TOOL_DEFINITIONS = {
                     "format": "date-time",
                     "description": "Filter: only return content ingested before this ISO timestamp",
                 },
+                "use_product_manifold": {
+                    "type": "boolean",
+                    "description": "Use true product manifold search (H^32 × S^16 × E^64) when available. Falls back to vector search if coords not populated.",
+                    "default": False,
+                },
             },
             "required": ["query"],
         },

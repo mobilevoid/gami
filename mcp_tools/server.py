@@ -135,6 +135,9 @@ async def _memory_recall(args: dict) -> dict:
     # Phase 3: Compression detail level
     detail_level = args.get("detail_level", "normal")
 
+    # Phase 9: Product manifold search (true H^32 × S^16 × E^64)
+    use_product_manifold = args.get("use_product_manifold", False)
+
     result = await recall(
         query=query,
         tenant_id=tenant_id,
@@ -148,6 +151,7 @@ async def _memory_recall(args: dict) -> dict:
         ingested_after=ingested_after,
         ingested_before=ingested_before,
         detail_level=detail_level,
+        use_product_manifold=use_product_manifold,
     )
 
     # Format for MCP response
