@@ -157,7 +157,7 @@ Each entity must have these fields:
 - "description": one-line description
 
 Rules:
-- Include IP addresses, hostnames, container IDs (e.g. CT231), server names, software names
+- Include IP addresses, hostnames, container IDs (e.g. web-01), server names, software names
 - Include credentials as type "credential" (passwords, API keys, tokens)
 - Include people by name or role
 - Do NOT include generic words like "system" or "server" unless they are specific named entities
