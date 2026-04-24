@@ -98,7 +98,47 @@ A **manifold** is a geometric space with its own topology and distance metrics. 
 └─────────────────┘  └─────────────────┘  └─────────────────┘
 ```
 
-**Key insight**: Different knowledge types need different embedding strategies:
+### Multi-Dimensional Embeddings: Beyond Semantic Similarity
+
+Here's what makes GAMI fundamentally different from standard vector databases:
+
+**Standard embedding** (what most RAG systems use):
+```
+"PostgreSQL password is abc123" → [0.23, -0.45, 0.12, ...] (768 floats)
+```
+That's it. One vector. The only operation is cosine similarity — "how semantically related is this to my query?" All other information (what type of fact this is, when it was learned, how confident we are, what it relates to) is **lost**.
+
+**GAMI multi-dimensional embedding**:
+```
+"PostgreSQL password is abc123" →
+  ├── semantic:    [0.23, -0.45, 0.12, ...]  (768-dim vector)
+  ├── temporal:    {event: 2024-03-15, learned: 2024-03-16, valid_until: null}
+  ├── structural:  {subject: "PostgreSQL", predicate: "password", object: "abc123"}
+  ├── confidence:  {score: 0.95, source: "config_file", verified: true}
+  ├── relational:  {links_to: ["PostgreSQL_entity", "db_cluster_3"]}
+  └── importance:  {score: 0.9, access_count: 47, last_accessed: "2024-03-20"}
+```
+
+Each dimension is **independently queryable**. This enables queries that are impossible with flat vectors:
+
+| Query | Standard RAG | GAMI Multi-Dimensional |
+|-------|--------------|------------------------|
+| "database password" | Cosine similarity only | semantic + type:credential filter |
+| "What changed last week?" | Cannot express | temporal.event > 7_days_ago |
+| "High-confidence facts about nginx" | Cannot express | confidence.score > 0.8 AND semantic ~ "nginx" |
+| "What did we know before the migration?" | Cannot express | temporal.learned < migration_date |
+| "Facts from config files vs conversation" | Cannot express | confidence.source filter |
+
+**The key insight**: A 768-dimensional vector is still just ONE dimension of information — semantic similarity. GAMI embeddings carry **6+ orthogonal dimensions** that can be combined, filtered, and weighted independently.
+
+This is why we call it "multi-manifold" — each manifold isn't just a separate index, it's a separate **geometric space** where distance means something different:
+- In the **Claims** manifold, distance considers predicate type (passwords cluster with passwords)
+- In the **Causal** manifold, distance respects directionality (cause→effect, not just "related")
+- In the **Temporal** manifold, distance is literal time difference
+
+---
+
+### Specialized Manifolds for Different Knowledge Types
 
 | Knowledge Type | Standard RAG | GAMI Manifold |
 |----------------|--------------|---------------|
