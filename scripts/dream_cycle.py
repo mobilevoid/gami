@@ -1458,6 +1458,106 @@ def dream_manifold_embeddings(batch_size=50, max_segments=500):
 
 
 # ============================================================
+# Phase 10: TRUE Product Manifold Coordinates (H^32 × S^16 × E^64)
+# ============================================================
+
+def dream_product_manifold_coords(max_items=500, batch_size=64):
+    """Generate TRUE product manifold coordinates for segments.
+
+    This creates coordinates in the product space H^32 × S^16 × E^64:
+    - Hyperbolic (32d Poincaré ball): For hierarchical structure
+    - Spherical (16d unit sphere): For categorical types
+    - Euclidean (64d): For semantic similarity (pgvector compatible)
+
+    Unlike the old "manifold_embeddings" which are just 6 flat vectors,
+    these are true geometric embeddings with proper geodesic distances.
+    """
+    log.info("=== Dream Phase 10: Product Manifold Coordinates ===")
+
+    try:
+        import torch
+        from api.llm.manifold_embeddings import get_manifold_encoder
+
+        encoder = get_manifold_encoder()
+        log.info(f"  Loaded manifold encoder (H^{encoder.h_dim} × S^{encoder.s_dim} × E^{encoder.e_dim})")
+
+        total_computed = 0
+
+        with engine.connect() as conn:
+            while total_computed < max_items and not should_stop():
+                # Find segments needing manifold coordinates
+                rows = conn.execute(text("""
+                    SELECT s.segment_id, s.embedding
+                    FROM segments s
+                    LEFT JOIN product_manifold_coords pmc
+                        ON s.segment_id = pmc.target_id AND pmc.target_type = 'segment'
+                    WHERE s.embedding IS NOT NULL
+                    AND pmc.target_id IS NULL
+                    AND s.storage_tier != 'cold'
+                    ORDER BY s.created_at DESC
+                    LIMIT :lim
+                """), {"lim": batch_size}).fetchall()
+
+                if not rows:
+                    log.info("  No more segments need manifold coordinates")
+                    break
+
+                log.info(f"  Processing batch of {len(rows)} segments...")
+
+                # Extract embeddings as tensor
+                ids = [r.segment_id for r in rows]
+                embeddings = torch.tensor([list(r.embedding) for r in rows], dtype=torch.float32)
+
+                # Project to manifold coordinates
+                with torch.no_grad():
+                    coords_batch = encoder.encode_batch_from_embeddings(embeddings)
+
+                # Save to database
+                for i, segment_id in enumerate(ids):
+                    if should_stop():
+                        break
+
+                    coords = coords_batch[i]
+                    h_list = coords.hyperbolic.tolist()
+                    s_list = coords.spherical.tolist()
+                    e_str = "[" + ",".join(str(float(v)) for v in coords.euclidean) + "]"
+
+                    conn.execute(text("""
+                        INSERT INTO product_manifold_coords
+                            (target_id, target_type, hyperbolic_coords,
+                             spherical_coords, euclidean_coords)
+                        VALUES (:tid, 'segment', :h, :s, CAST(:e AS vector))
+                        ON CONFLICT (target_id, target_type) DO UPDATE SET
+                            hyperbolic_coords = EXCLUDED.hyperbolic_coords,
+                            spherical_coords = EXCLUDED.spherical_coords,
+                            euclidean_coords = EXCLUDED.euclidean_coords,
+                            computed_at = NOW()
+                    """), {
+                        "tid": segment_id,
+                        "h": h_list,
+                        "s": s_list,
+                        "e": e_str,
+                    })
+
+                conn.commit()
+                total_computed += len(ids)
+                log.info(f"  Computed {total_computed} manifold coordinates so far")
+
+        result = {"segments_processed": total_computed}
+        log.info(f"  Product manifold coords complete: {json.dumps(result)}")
+        return result
+
+    except ImportError as e:
+        log.warning(f"  Skipping product manifold (dependencies not available): {e}")
+        return {"skipped": True, "reason": str(e)}
+    except Exception as e:
+        log.error(f"  Product manifold coords failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e)}
+
+
+# ============================================================
 # INNOVATION EXTENSION PHASES
 # ============================================================
 
@@ -1956,6 +2056,7 @@ def dream(duration=None, phase=None, check_idle=False):
         ("score", dream_score),
         ("embed", dream_embed),
         ("manifold_embeddings", dream_manifold_embeddings),
+        ("product_manifold_coords", dream_product_manifold_coords),  # TRUE manifold
         ("deep_dream", dream_deep),
         ("auto_approve", dream_auto_approve),
         # Innovation extension phases

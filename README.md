@@ -41,7 +41,19 @@ GAMI (Graph-Augmented Memory Interface) is a **persistent memory system** that g
 
 ---
 
-## The Multi-Manifold Philosophy
+## True Manifold Embeddings: H^32 × S^16 × E^64
+
+GAMI implements **true manifold embeddings** using a product space of three geometric components:
+
+| Component | Dimension | Geometry | Purpose |
+|-----------|-----------|----------|---------|
+| **Hyperbolic** (Poincaré ball) | 32 | Curved, exponential | Hierarchies: entity types, clusters, containment |
+| **Spherical** (unit sphere) | 16 | Great circle distance | Categories: entity types, claim modalities |
+| **Euclidean** | 64 | Flat, linear (pgvector) | Semantic similarity, fast pre-filtering |
+
+**Total: 112 dimensions** in product manifold vs 768 flat dimensions in standard RAG.
+
+> **Why this matters**: A tree with 1000 leaves embeds in 2D hyperbolic space without distortion. In Euclidean space, you'd need ~1000 dimensions. Hyperbolic geometry is *naturally* hierarchical.
 
 ### Why Single Vector Spaces Fail
 
@@ -74,47 +86,70 @@ When you ask "What's the database password?", a flat embedding search might retu
 2. A philosophical discussion about passwords in society
 3. The actual credential (if you're lucky)
 
-### GAMI's Solution: Specialized Manifolds
+### The Product Manifold Architecture
 
-A **manifold** is a geometric space with its own topology and distance metrics. GAMI maintains **8 separate manifolds**, each with embeddings optimized for specific knowledge structures:
+GAMI's product manifold **H^32 × S^16 × E^64** combines three geometric spaces, each optimized for different aspects of knowledge:
 
 ```
-┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
-│   CLAIMS        │  │   PROCEDURES    │  │   ENTITIES      │
-│   (SPO Triples) │  │   (Sequences)   │  │   (Named Things)│
-│                 │  │                 │  │                 │
-│  [S]──[P]──[O]  │  │  [1]→[2]→[3]→[4]│  │  Type: Service  │
-│  subject/pred/  │  │  ordered steps  │  │  Name: PostgreSQL│
-│  object encoded │  │  with context   │  │  Attrs: {...}   │
-└─────────────────┘  └─────────────────┘  └─────────────────┘
-
-┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
-│   CAUSAL        │  │   RELATIONS     │  │   MEMORIES      │
-│   (Cause→Effect)│  │   (Edges)       │  │   (Consolidated)│
-│                 │  │                 │  │                 │
-│  [Cause]        │  │  [A]────[B]     │  │  Importance: 0.9│
-│      ↓          │  │  relationship   │  │  Frequency: 12  │
-│  [Effect]       │  │  type embedded  │  │  Recency: 2d    │
-└─────────────────┘  └─────────────────┘  └─────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│                    PRODUCT MANIFOLD H^32 × S^16 × E^64                 │
+├────────────────────────────────────────────────────────────────────────┤
+│                                                                        │
+│  ┌──────────────────────┐                                              │
+│  │  HYPERBOLIC (32d)    │   Poincaré Ball Model                        │
+│  │  ┌─────────────────┐ │   • Center = root/general concepts           │
+│  │  │       ∙         │ │   • Boundary = leaves/specific items         │
+│  │  │    ∙  ∙  ∙      │ │   • Distance grows EXPONENTIALLY             │
+│  │  │   ∙ ∙ ∙ ∙ ∙     │ │   • Perfect for: entity types, clusters,    │
+│  │  │  ∙∙∙∙∙∙∙∙∙∙∙    │ │     parent-child, source-segment            │
+│  │  └─────────────────┘ │                                              │
+│  └──────────────────────┘                                              │
+│                                                                        │
+│  ┌──────────────────────┐                                              │
+│  │  SPHERICAL (16d)     │   Unit Sphere                                │
+│  │       ___            │   • Points ON sphere surface                 │
+│  │      /   \           │   • Great circle distance                    │
+│  │     | ∙ ∙ |          │   • Antipodal = opposite categories          │
+│  │      \___/           │   • Perfect for: entity types (person vs     │
+│  │                      │     service), claim modality, memory type    │
+│  └──────────────────────┘                                              │
+│                                                                        │
+│  ┌──────────────────────┐                                              │
+│  │  EUCLIDEAN (64d)     │   Standard Vector Space                      │
+│  │  ∙     ∙             │   • Linear distance (L2)                     │
+│  │    ∙                 │   • pgvector compatible (fast ANN)           │
+│  │         ∙   ∙        │   • Perfect for: semantic similarity,        │
+│  │    ∙        ∙        │     topic relatedness, fast pre-filtering    │
+│  └──────────────────────┘                                              │
+│                                                                        │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Multi-Dimensional Embeddings: Beyond Semantic Similarity
+**Two-Stage Retrieval**:
+1. **Pre-filter** (fast): pgvector ANN on 64d Euclidean component
+2. **Rerank** (precise): Full geodesic distance in product manifold on top-K
 
-Here's what makes GAMI fundamentally different from standard vector databases:
+### True Geodesic Distance vs Cosine Similarity
 
 **Standard embedding** (what most RAG systems use):
 ```
 "PostgreSQL password is abc123" → [0.23, -0.45, 0.12, ...] (768 floats)
+Distance = cosine similarity (flat, symmetric, no structure)
 ```
-That's it. One vector. The only operation is cosine similarity — "how semantically related is this to my query?" All other information (what type of fact this is, when it was learned, how confident we are, what it relates to) is **lost**.
 
-**GAMI multi-dimensional embedding**:
+**GAMI product manifold embedding**:
 ```
 "PostgreSQL password is abc123" →
-  ├── semantic:    [0.23, -0.45, 0.12, ...]  (768-dim vector)
-  ├── temporal:    {event: 2024-03-15, learned: 2024-03-16, valid_until: null}
-  ├── structural:  {subject: "PostgreSQL", predicate: "password", object: "abc123"}
-  ├── confidence:  {score: 0.95, source: "config_file", verified: true}
+  ├── hyperbolic:  [0.12, 0.34, ...] (32d Poincaré ball)
+  │                └── Distance: arcosh(1 + 2||x-y||²/((1-||x||²)(1-||y||²)))
+  │
+  ├── spherical:   [0.56, 0.78, ...] (16d unit sphere)  
+  │                └── Distance: arccos(x·y)
+  │
+  └── euclidean:   [0.23, -0.45, ...] (64d)
+                   └── Distance: ||x-y||₂ (pgvector compatible)
+
+Combined distance = w_h·d_hyp + w_s·d_sph + w_e·d_euc
   ├── relational:  {links_to: ["PostgreSQL_entity", "db_cluster_3"]}
   └── importance:  {score: 0.9, access_count: 47, last_accessed: "2024-03-20"}
 ```
