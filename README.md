@@ -325,12 +325,10 @@ GAMI evolved from research into persistent AI memory systems, driven by frustrat
 | Date | Milestone |
 |------|-----------|
 | **2024 Q3** | Initial research into hyperbolic embeddings for hierarchical knowledge |
-| **2024 Q4** | First prototype with Poincaré ball embeddings, proof-of-concept MCP server |
-| **2025 Q1** | Multi-tenant architecture, dream cycle concept, hybrid search |
-| **2025 Q2** | Production deployment, multi-tenant scaling, cross-encoder reranking |
-| **2025 Q3** | Workflow extraction, memory consolidation, lossless compression |
+| **2024 Q4** | Full system complete: multi-tenant architecture, dream cycle, hybrid search, MCP integration |
+| **2025** | Production testing, scaling optimization, cross-encoder reranking, workflow extraction |
 | **2026 Q1** | Product manifold (H³² × S¹⁶ × E⁶⁴), real-time manifold coordinates |
-| **2026 Q2** | Public release, production-tested, 18-phase dream cycle |
+| **2026 Q2** | Public release |
 
 ## License
 
