@@ -24,7 +24,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s",
                    handlers=[logging.FileHandler("/tmp/describe_images.log"), logging.StreamHandler()])
 log = logging.getLogger("describe")
 
-DB_URL = "postgresql://gami:GamiProd2026@localhost:5433/gami"
+DB_URL = os.getenv("DATABASE_URL", "postgresql://gami:gami@localhost:5432/gami")
 OLLAMA_URL = "http://localhost:11434"
 VISION_MODEL = "gemma3:27b-it-q8_0"
 

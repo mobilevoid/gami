@@ -1,3 +1,4 @@
+import os
 #!/usr/bin/env python3
 """Fast Ollama embedding for ALL GAMI tables — parallel requests.
 
@@ -14,7 +15,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s",
                    handlers=[logging.FileHandler("/tmp/ollama_embed_all.log"), logging.StreamHandler()])
 log = logging.getLogger("embed")
 
-DB_URL = "postgresql://gami:GamiProd2026@localhost:5433/gami"
+DB_URL = os.getenv("DATABASE_URL", "postgresql://gami:gami@localhost:5432/gami")
 OLLAMA_URL = "http://localhost:11434/api/embeddings"
 MODEL = "nomic-embed-text"
 WORKERS = 12  # Parallel Ollama requests

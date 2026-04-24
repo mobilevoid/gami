@@ -1,3 +1,4 @@
+import os
 #!/usr/bin/env python3
 """Extract entities and claims from priority GAMI segments.
 
@@ -23,7 +24,7 @@ from sqlalchemy.orm import sessionmaker
 # Configuration
 # ---------------------------------------------------------------------------
 
-DB_URL = "postgresql+psycopg2://gami:GamiProd2026@127.0.0.1:5433/gami"
+DB_URL = os.getenv("DATABASE_URL", "postgresql://gami:gami@localhost:5432/gami")
 VLLM_URL = "http://localhost:8000/v1"
 EXTRACTION_MODEL = "qwen35-27b-unredacted"
 TENANT_ID = "shared"
@@ -177,9 +178,9 @@ Each claim must have these fields:
 
 Rules:
 - Extract specific facts: IP addresses, passwords, versions, configurations, relationships
-- Include infrastructure facts: "CT231 has IP 192.168.90.231", "GitLab runs on CT252"
-- Include credentials: "GitLab root password is Xk9mP$vL2wQz8nRj"
-- Include relationships: "NPM proxies traffic to CT231"
+- Include infrastructure facts: "Server A has IP 10.0.0.5", "GitLab runs on prod-server"
+- Include credentials: "Service X password is ExamplePass123"
+- Include relationships: "Proxy routes traffic to backend-server"
 - Be precise — copy exact values from the text
 
 Text:

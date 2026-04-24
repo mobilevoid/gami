@@ -1,3 +1,4 @@
+import os
 #!/usr/bin/env python3
 """Book ingest v2 — per-page tracking, quality gate, parallel processing.
 
@@ -20,7 +21,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s",
                    handlers=[logging.FileHandler("/tmp/ingest_v2.log"), logging.StreamHandler()])
 log = logging.getLogger("ingest_v2")
 
-DB_URL = "postgresql://gami:GamiProd2026@localhost:5433/gami"
+DB_URL = os.getenv("DATABASE_URL", "postgresql://gami:gami@localhost:5432/gami")
 engine = create_engine(DB_URL, pool_size=3)
 TENANT = "books"
 BOOK_DIR = "/mnt/16tb/books/"

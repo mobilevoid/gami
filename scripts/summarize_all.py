@@ -1,3 +1,4 @@
+import os
 #!/usr/bin/env python3
 """Parallel book/source summarization using vLLM.
 
@@ -25,7 +26,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s",
                    handlers=[logging.FileHandler("/tmp/summarize_all.log"), logging.StreamHandler()])
 log = logging.getLogger("summarize")
 
-DB_URL = "postgresql://gami:GamiProd2026@localhost:5433/gami"
+DB_URL = os.getenv("DATABASE_URL", "postgresql://gami:gami@localhost:5432/gami")
 VLLM_URL = "http://localhost:8000/v1/chat/completions"
 MODEL = "qwen35-27b-unredacted"
 

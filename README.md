@@ -1,91 +1,196 @@
-# GAMI - Graph-Augmented Memory Intelligence
+# GAMI - Graph-Augmented Memory Interface
 
 > **Version 2.0** | Multi-tenant embedded document database with hybrid search, MCP server, and dream-mode knowledge synthesis.
 
 ## Overview
 
-GAMI is an AI memory system that provides:
+GAMI is a persistent AI memory system designed for use with AI assistants like Claude Code. It provides:
+
 - **Hybrid Search**: Vector + lexical search with cross-encoder reranking
-- **Multi-Index Retrieval**: Query routing to optimal indexes (entities, claims, procedures, relations, etc.)
+- **Multi-Index Retrieval**: Query routing to optimal indexes (entities, claims, procedures, relations)
 - **Dream Cycle**: Background knowledge synthesis (17 phases) for entity extraction, consolidation, and workflow learning
-- **MCP Integration**: 24+ tools for AI agent memory access
+- **MCP Integration**: 27 tools for AI agent memory access
 - **Multi-Tenant**: Isolated knowledge bases per tenant
-
-## Key Features
-
-### Phase 1: Cross-Encoder Reranking
-- 25-40% precision improvement on retrieval
-- Uses `ms-marco-MiniLM-L-6-v2` for reranking
-- Configurable via `GAMI_RERANKER_ENABLED`
-
-### Phase 2: Mem0-Style Memory Operations
-- Intelligent duplicate detection (ADD/UPDATE/DELETE/NOOP)
-- ~60% storage reduction over time
-- LLM-assisted consolidation decisions
-
-### Phase 3: Lossless Compression
-- Delta storage for unique facts not in cluster abstractions
-- `detail_level` parameter: summary, normal, full
-- Original text never deleted, only tiered
-
-### Phase 4 & 8: Workflow Learning
-- Extracts workflow patterns from conversation sessions
-- Stores as workflow memories (not rigid procedures)
-- Natural consolidation via dream cycle
-
-### Phase 5: Bi-Temporal Queries
-- Filter by `event_time` (when it happened) vs `ingested_at` (when learned)
-- Parameters: `event_after`, `event_before`, `ingested_after`, `ingested_before`
-
-### Phase 6: Query Routing & Multi-Index
-- 8 query modes with specialized routing
-- 8 index types: segments, entities, claims, relations, procedures, memories, clusters, causal
-- Weighted fusion based on query intent
-
-### Phase 7: Contradiction-Aware Retrieval
-- Detects conflicting information
-- Reports contradictions in recall results
-- Evidence scoring with corroboration/contradiction factors
+- **Multi-Backend LLM**: Support for vLLM, Ollama, OpenAI, and Anthropic APIs
 
 ## Quick Start
+
+### Option 1: Docker (Recommended)
+
+```bash
+# Clone the repository
+git clone https://github.com/mobilevoid/gami.git
+cd gami
+
+# Copy and configure environment
+cp .env.example .env
+# Edit .env with your settings
+
+# Start all services
+docker compose up -d
+
+# Pull embedding model (if using Ollama)
+docker exec gami-ollama ollama pull nomic-embed-text
+
+# Verify
+curl http://localhost:9090/health
+```
+
+### Option 2: Manual Installation
 
 ```bash
 # Install dependencies
 pip install -r requirements.txt
 
-# Set environment variables
+# Set up PostgreSQL 16 with pgvector
+sudo apt install postgresql-16 postgresql-16-pgvector
+
+# Set up Redis
+sudo apt install redis-server
+
+# Configure environment
 export DATABASE_URL="postgresql://gami:password@localhost:5433/gami"
 export REDIS_URL="redis://localhost:6379/0"
-export VLLM_URL="http://localhost:8000"
+export OLLAMA_URL="http://localhost:11434"
+export GAMI_LLM_BACKEND="ollama"
 
-# Start the MCP server
-python -m mcp_tools.server
+# Initialize database
+psql -U gami -d gami -f install/schema.sql
 
-# Start the API
-uvicorn api.main:app --port 8123
+# Start API
+uvicorn api.main:app --port 9090
 
-# Start dream cycle (background)
+# Start dream cycle (optional)
 python scripts/dream_cycle.py --duration 24
 ```
 
-## MCP Tools
+## LLM Backend Configuration
+
+GAMI supports multiple LLM backends for embeddings and dream cycle synthesis. Configure via environment variables:
+
+### Ollama (Default, Local)
+```bash
+GAMI_LLM_BACKEND=ollama
+OLLAMA_URL=http://localhost:11434
+EMBEDDING_MODEL=nomic-embed-text
+GAMI_LLM_MODEL=llama3.2  # Or any Ollama model
+```
+
+### vLLM (Local, GPU)
+```bash
+GAMI_LLM_BACKEND=vllm
+VLLM_URL=http://localhost:8000/v1
+GAMI_LLM_MODEL=your-model-name
+```
+
+### OpenAI API
+```bash
+GAMI_LLM_BACKEND=openai
+OPENAI_API_KEY=sk-...
+GAMI_LLM_MODEL=gpt-4o-mini
+```
+
+### Anthropic API
+```bash
+GAMI_LLM_BACKEND=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+GAMI_LLM_MODEL=claude-sonnet-4-20250514
+```
+
+## MCP Tools (27 total)
 
 | Tool | Description |
 |------|-------------|
 | `memory_recall` | Recall relevant memories with token budget |
 | `memory_remember` | Store a new memory (auto-consolidation) |
 | `memory_search` | Direct hybrid search |
+| `memory_context` | Get entity context and relations |
 | `memory_suggest_procedure` | Suggest workflow patterns |
 | `memory_correct` | Fix incorrect information |
 | `memory_verify` | Verify claims against knowledge |
-| `memory_context` | Get entity context and relations |
+| `memory_update` | Update existing memory |
+| `memory_forget` | Archive a memory |
+| `memory_feedback` | Provide feedback on retrieval |
+| `memory_cite` | Get source citations |
 | `ingest_file` | Add files to knowledge base |
-| `dream_start/stop/status` | Control dream cycle |
-| `admin_stats` | System statistics |
+| `ingest_source` | Add source document |
+| `bulk_ingest` | Batch ingestion |
+| `graph_explore` | Explore entity relationships |
+| `dream_start` | Start dream cycle |
+| `dream_stop` | Stop dream cycle |
+| `dream_status` | Check dream cycle status |
+| `dream_haiku` | Generate knowledge haiku |
+| `tenant_search` | Search within tenant |
+| `tenant_stats` | Tenant statistics |
+| `create_tenant` | Create new tenant |
+| `admin_stats` | System-wide statistics |
+| `run_haiku_extraction` | Extract haiku from text |
+| `store_extractions` | Store extracted entities |
+| `review_proposals` | Review pending proposals |
+| `get_unprocessed_segments` | Get segments needing processing |
+
+## Claude Code Integration
+
+### Configure MCP Server
+
+Add to `~/.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "gami": {
+      "command": "python",
+      "args": ["-m", "mcp_tools.server"],
+      "cwd": "/path/to/gami",
+      "env": {
+        "PYTHONPATH": "/path/to/gami",
+        "DATABASE_URL": "postgresql://gami:password@localhost:5433/gami"
+      }
+    }
+  }
+}
+```
+
+### Session Hooks (Optional)
+
+Add hooks to preserve context before compaction:
+
+```json
+{
+  "hooks": {
+    "PreCompact": [{"hooks": [{"type": "command", "command": "/path/to/gami/cli/journal_hook.sh"}]}],
+    "SessionEnd": [{"hooks": [{"type": "command", "command": "/path/to/gami/cli/journal_hook.sh"}]}]
+  }
+}
+```
+
+## Dream Cycle
+
+The dream cycle runs 17 phases in the background to synthesize and consolidate knowledge:
+
+| Phase | Description |
+|-------|-------------|
+| `extract` | Entity extraction from segments |
+| `summarize` | Generate summaries |
+| `resolve` | Alias resolution |
+| `reconcile` | Conflict resolution |
+| `verify_memories` | Memory verification |
+| `relate` | Build entity relations |
+| `score` | Importance scoring |
+| `embed` | Generate embeddings |
+| `manifold_embeddings` | Multi-manifold embeddings |
+| `deep_dream` | Deep synthesis |
+| `auto_approve` | Auto-approve high-confidence items |
+| `learning` | Pattern learning |
+| `causal` | Causal relation extraction |
+| `consolidate` | Memory consolidation |
+| `compress` | Lossless compression with deltas |
+| `extract_workflows` | Workflow pattern extraction |
+| `trust` | Agent trust scoring |
 
 ## Database Schema
 
-Core tables:
+Core tables (36 total):
 - `segments` - Text chunks with embeddings
 - `sources` - Source documents
 - `entities` - Extracted entities
@@ -93,71 +198,62 @@ Core tables:
 - `relations` - Entity relationships
 - `assistant_memories` - Semantic memories
 - `memory_clusters` - Consolidated abstractions
-- `procedures` - Legacy workflow storage
+- `procedures` - Workflow storage
 - `compression_deltas` - Lossless compression facts
-
-## Dream Cycle Phases (17)
-
-1. `extract` - Entity extraction
-2. `summarize` - Generate summaries
-3. `resolve` - Alias resolution
-4. `reconcile` - Conflict resolution
-5. `verify_memories` - Memory verification
-6. `relate` - Build relations
-7. `score` - Importance scoring
-8. `embed` - Generate embeddings
-9. `manifold_embeddings` - Multi-manifold embeddings
-10. `deep_dream` - Deep synthesis
-11. `auto_approve` - Auto-approve high-confidence
-12. `learning` - Pattern learning
-13. `causal` - Causal relation extraction
-14. `consolidate` - Memory consolidation (type-agnostic)
-15. `compress` - Lossless compression
-16. `extract_procedures` - Workflow extraction (creates workflow memories)
-17. `trust` - Agent trust scoring
-
-## Configuration
-
-Environment variables:
-```bash
-# Database
-DATABASE_URL=postgresql://gami:pass@localhost:5433/gami
-REDIS_URL=redis://localhost:6379/0
-
-# LLM
-VLLM_URL=http://localhost:8000
-OLLAMA_URL=http://localhost:11434
-
-# Reranker
-GAMI_RERANKER_ENABLED=true
-GAMI_RERANKER_TOP_K=50
-GAMI_RERANKER_BLEND_RATIO=0.7
-
-# Dream
-GAMI_DREAM_IDLE_CHECK=true
-GAMI_DREAM_MAX_DURATION=28800
-```
+- `causal_relations` - Cause-effect relationships
 
 ## Directory Structure
 
 ```
-/opt/gami/
-├── api/               # FastAPI application
-│   ├── search/        # Reranker, hybrid search
-│   ├── services/      # Business logic
-│   └── routers/       # API endpoints
-├── manifold/          # Multi-manifold retrieval
-│   └── retrieval/     # Query routing, multi-index
-├── mcp_tools/         # MCP server and tools
-├── scripts/           # Dream cycle, migrations
-├── storage/           # SQL migrations
-└── tests/             # Test suite
+gami/
+├── api/                 # FastAPI application
+│   ├── search/          # Reranker, hybrid search
+│   ├── services/        # Business logic
+│   ├── llm/             # Multi-backend LLM providers
+│   └── routers/         # API endpoints
+├── manifold/            # Multi-manifold retrieval
+│   └── retrieval/       # Query routing, multi-index
+├── mcp_tools/           # MCP server and tools
+├── scripts/             # Dream cycle, utilities
+├── storage/sql/         # SQL migrations
+├── install/             # Installation scripts
+├── cli/                 # CLI tools and hooks
+└── tests/               # Test suite
 ```
+
+## Configuration Reference
+
+See `.env.example` for all available configuration options.
+
+Key settings:
+- `DATABASE_URL` - PostgreSQL connection string
+- `REDIS_URL` - Redis connection string
+- `GAMI_LLM_BACKEND` - LLM provider (ollama, vllm, openai, anthropic)
+- `GAMI_RERANKER_ENABLED` - Enable cross-encoder reranking
+- `GAMI_API_KEY` - Optional API key for authentication
 
 ## License
 
-Proprietary - All rights reserved.
+This software is licensed under the **Stalwart LLC Source Available License v1.0**.
+
+You may view, download, and use this software for personal, educational, and non-commercial evaluation purposes. Commercial use requires a license from Stalwart LLC.
+
+See [LICENSE](LICENSE) for full terms.
+
+For commercial licensing: choll@stalwartresources.com
 
 ## Contributing
 
-Internal project - contact the maintainers for contribution guidelines.
+Contributions are welcome under the terms of the license. By submitting contributions, you grant Stalwart LLC a perpetual, irrevocable license to use, modify, and sublicense your contributions.
+
+Before contributing:
+1. Review the [LICENSE](LICENSE)
+2. Ensure your contribution doesn't include proprietary code
+3. Test your changes locally
+4. Submit a pull request with a clear description
+
+## Support
+
+For issues and questions:
+- Open an issue on GitHub
+- Contact: choll@stalwartresources.com

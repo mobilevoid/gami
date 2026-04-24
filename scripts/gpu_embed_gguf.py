@@ -1,3 +1,4 @@
+import os
 #!/usr/bin/env python3
 """GPU embedding using Ollama's exact GGUF model via llama-cpp-python.
 
@@ -15,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s",
                    handlers=[logging.FileHandler("/tmp/gpu_embed_gguf.log"), logging.StreamHandler()])
 log = logging.getLogger("gpu_embed")
 
-DB_URL = "postgresql://gami:GamiProd2026@localhost:5433/gami"
+DB_URL = os.getenv("DATABASE_URL", "postgresql://gami:gami@localhost:5432/gami")
 MODEL_PATH = "/opt/gami/models/nomic-embed-text.gguf"
 BATCH_SIZE = 100  # DB fetch batch
 engine = create_engine(DB_URL, pool_size=3)

@@ -70,35 +70,65 @@ def vllm_is_idle():
     except:
         return True
 
-def call_vllm(prompt, max_tokens=1500):
-    """Call vLLM with preemption check."""
+def call_llm(prompt, max_tokens=1500):
+    """Call configured LLM provider with preemption check.
+
+    Supports multiple backends via GAMI_LLM_BACKEND env var:
+    - vllm (default): Local vLLM server
+    - ollama: Local Ollama server
+    - openai: OpenAI API (requires OPENAI_API_KEY)
+    - anthropic: Anthropic API (requires ANTHROPIC_API_KEY)
+    """
     if should_stop():
         return None
     try:
         from api.llm.vllm_monitor import emit as _emit
     except Exception:
         _emit = None
+
     t0 = time.time()
+
     try:
-        r = requests.post(f"{settings.VLLM_URL}/chat/completions", json={
-            "model": "qwen35-27b-unredacted",
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
-            "temperature": 0.1,
-            "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
-        }, timeout=120)
-        if r.status_code == 200:
-            content = r.json()["choices"][0]["message"]["content"]
-            tokens = r.json().get("usage", {}).get("completion_tokens", 0)
-            content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
-            if _emit:
-                _emit("dream", prompt, content, (time.time()-t0)*1000, "ok", tokens)
-            return content
+        from api.llm.providers import complete_sync, LLMProvider
+
+        # Get configured provider from environment
+        backend = os.getenv("GAMI_LLM_BACKEND", "vllm").lower()
+
+        provider_map = {
+            "vllm": LLMProvider.VLLM,
+            "ollama": LLMProvider.OLLAMA,
+            "openai": LLMProvider.OPENAI,
+            "anthropic": LLMProvider.ANTHROPIC,
+        }
+        provider = provider_map.get(backend, LLMProvider.VLLM)
+
+        response = complete_sync(
+            prompt=prompt,
+            max_tokens=max_tokens,
+            temperature=0.1,
+            provider=provider,
+        )
+
+        content = response.content
+        tokens = response.usage.get("completion_tokens", 0) if response.usage else 0
+
+        if _emit:
+            _emit("dream", prompt, content, (time.time()-t0)*1000, "ok", tokens)
+
+        return content
+
     except Exception as e:
-        log.warning(f"vLLM call failed: {e}")
+        log.warning(f"LLM call failed: {e}")
         if _emit:
             _emit("dream", prompt, "", (time.time()-t0)*1000, "error", 0, str(e))
+
     return None
+
+
+# Backward compatibility alias
+def call_vllm(prompt, max_tokens=1500):
+    """Legacy alias for call_llm - use call_llm() instead."""
+    return call_llm(prompt, max_tokens)
 
 def gen_id(prefix, name):
     h = hashlib.md5(name.encode()).hexdigest()[:8]

@@ -1,3 +1,4 @@
+import os
 #!/usr/bin/env python3
 """Re-embed everything with sentence-transformers nomic-embed-text-v1.5.
 
@@ -14,7 +15,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s",
                    handlers=[logging.FileHandler("/tmp/reembed_all.log"), logging.StreamHandler()])
 log = logging.getLogger("reembed")
 
-DB_URL = "postgresql://gami:GamiProd2026@localhost:5433/gami"
+DB_URL = os.getenv("DATABASE_URL", "postgresql://gami:gami@localhost:5432/gami")
 MODEL_NAME = "nomic-ai/nomic-embed-text-v1.5"
 BATCH_SIZE = 128
 

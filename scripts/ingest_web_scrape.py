@@ -1,3 +1,4 @@
+import os
 #!/usr/bin/env python3
 """Ingest web scraped content into GAMI.
 
@@ -17,7 +18,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s",
                    handlers=[logging.FileHandler("/tmp/ingest_web.log"), logging.StreamHandler()])
 log = logging.getLogger("web_ingest")
 
-DB_URL = "postgresql://gami:GamiProd2026@localhost:5433/gami"
+DB_URL = os.getenv("DATABASE_URL", "postgresql://gami:gami@localhost:5432/gami")
 engine = create_engine(DB_URL, pool_size=3)
 
 
