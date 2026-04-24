@@ -136,7 +136,7 @@ async def _memory_recall(args: dict) -> dict:
     detail_level = args.get("detail_level", "normal")
 
     # Phase 9: Product manifold search (true H^32 × S^16 × E^64)
-    use_product_manifold = args.get("use_product_manifold", False)
+    use_product_manifold = args.get("use_product_manifold", True)
 
     result = await recall(
         query=query,
