@@ -76,7 +76,11 @@ async def post_ingest_embed_and_manifold(
             rows = result.fetchall()
 
             for row in rows:
-                seg_id, seg_text = row.segment_id, row.text
+                # Handle both tuple and named access
+                if hasattr(row, 'segment_id'):
+                    seg_id, seg_text = row.segment_id, row.text
+                else:
+                    seg_id, seg_text = row[0], row[1]
                 if not seg_text or len(seg_text.strip()) < 10:
                     continue
 
