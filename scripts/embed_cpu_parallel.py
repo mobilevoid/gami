@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""CPU parallel embedding via Ollama — runs alongside GPU embedding."""
+import os, sys, time, logging, requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from api.config import settings
+from sqlalchemy import create_engine, text
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+log = logging.getLogger("embed_cpu")
+
+WORKERS = 8
+
+def embed_one(seg_id, seg_text):
+    try:
+        r = requests.post(f"{settings.OLLAMA_URL}/api/embeddings",
+                         json={"model": settings.EMBEDDING_MODEL, "prompt": seg_text[:6000]}, timeout=30)
+        if r.status_code == 200:
+            return seg_id, r.json()["embedding"]
+    except:
+        pass
+    return seg_id, None
+
+def main():
+    engine = create_engine(settings.DATABASE_URL_SYNC, pool_size=3)
+    with engine.connect() as conn:
+        total = conn.execute(text("""
+            SELECT count(*) FROM segments 
+            WHERE embedding IS NULL 
+            AND (quality_flags_json->>'chunked' IS NULL OR quality_flags_json->>'chunked' != 'true')
+        """)).scalar()
+        log.info(f"CPU: {total} segments to embed (working from the END to avoid GPU collision)")
+        if total == 0:
+            return
+        
+        embedded = errors = 0
+        start = time.time()
+        
+        while True:
+            # Work from the END of the queue (GPU works from the START)
+            rows = conn.execute(text("""
+                SELECT segment_id, text FROM segments 
+                WHERE embedding IS NULL 
+                AND (quality_flags_json->>'chunked' IS NULL OR quality_flags_json->>'chunked' != 'true')
+                ORDER BY created_at DESC LIMIT 100
+            """)).fetchall()
+            
+            if not rows:
+                break
+            
+            with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+                futures = {pool.submit(embed_one, r[0], r[1]): r[0] for r in rows}
+                for f in as_completed(futures):
+                    sid, emb = f.result()
+                    if emb:
+                        vec = "[" + ",".join(str(v) for v in emb) + "]"
+                        conn.execute(text("UPDATE segments SET embedding = CAST(:v AS vector) WHERE segment_id = :s"),
+                                   {"v": vec, "s": sid})
+                        embedded += 1
+                    else:
+                        errors += 1
+            conn.commit()
+            
+            elapsed = time.time() - start
+            rate = embedded / elapsed if elapsed > 0 else 0
+            remain = total - embedded
+            if embedded % 200 == 0 or embedded < 50:
+                log.info(f"CPU: {embedded}/{total} ({rate:.0f}/s, ~{remain/max(rate,1)/60:.1f}min, {errors} err)")
+        
+        log.info(f"CPU done: {embedded} in {time.time()-start:.0f}s")
+
+if __name__ == "__main__":
+    main()

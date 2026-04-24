@@ -1,0 +1,71 @@
+# GAMI - Graph-Augmented Memory Interface
+# Core dependencies
+
+# Web framework
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0
+python-multipart>=0.0.6
+
+# Database
+sqlalchemy[asyncio]>=2.0.0
+asyncpg>=0.28.0
+psycopg2-binary>=2.9.0
+pgvector>=0.2.0
+alembic>=1.12.0
+
+# Caching & task queue
+redis>=5.0.0
+celery[redis]>=5.3.0
+
+# HTTP clients
+httpx>=0.25.0
+requests>=2.31.0
+
+# Data validation & serialization
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# Templating & text
+jinja2>=3.1.0
+tiktoken>=0.5.0
+
+# Compression
+zstandard>=0.22.0
+
+# MCP protocol
+mcp>=1.0.0
+
+# Environment & config
+python-dotenv>=1.0.0
+
+# Security
+passlib[bcrypt]>=1.7.0
+cryptography>=41.0.0
+
+# Scheduling
+croniter>=2.0.0
+
+# Optional: LLM backends (install as needed)
+# pip install openai anthropic sentence-transformers
+
+# For OpenAI API backend
+# openai>=1.0.0
+
+# For Anthropic API backend
+# anthropic>=0.18.0
+
+# For cross-encoder reranking
+# sentence-transformers>=2.2.0
+
+# For PDF ingestion
+# pymupdf>=1.23.0  # fitz
+# pytesseract>=0.3.10
+# Pillow>=10.0.0
+
+# For local embedding with llama-cpp
+# llama-cpp-python>=0.2.0
+
+# Development
+# pytest>=7.4.0
+# pytest-asyncio>=0.21.0
+# ruff>=0.1.0

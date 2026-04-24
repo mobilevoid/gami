@@ -1,0 +1,188 @@
+# GAMI - Graph-Augmented Memory Interface
+# Docker Compose for local development and deployment
+#
+# Usage:
+#   docker compose up -d              # Start all services
+#   docker compose up -d gami         # Start GAMI API only (requires external DB)
+#   docker compose logs -f gami       # Follow GAMI logs
+#   docker compose exec gami bash     # Shell into GAMI container
+#
+# Environment:
+#   Copy .env.example to .env and configure before starting
+
+version: "3.8"
+
+services:
+  # PostgreSQL 16 with pgvector extension
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: gami-postgres
+    environment:
+      POSTGRES_USER: ${GAMI_DB_USER:-gami}
+      POSTGRES_PASSWORD: ${GAMI_DB_PASSWORD:-gami_secure_password}
+      POSTGRES_DB: ${GAMI_DB_NAME:-gami}
+    volumes:
+      - gami_postgres_data:/var/lib/postgresql/data
+      - ./install/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    ports:
+      - "${GAMI_DB_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${GAMI_DB_USER:-gami} -d ${GAMI_DB_NAME:-gami}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis for caching and task queue
+  redis:
+    image: redis:7-alpine
+    container_name: gami-redis
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - gami_redis_data:/data
+    ports:
+      - "${GAMI_REDIS_PORT:-6380}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Ollama for local embeddings (optional - can use external)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: gami-ollama
+    volumes:
+      - gami_ollama_data:/root/.ollama
+    ports:
+      - "${GAMI_OLLAMA_PORT:-11434}:11434"
+    # Uncomment for GPU support:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # GAMI API Server
+  gami:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gami-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # Database
+      DATABASE_URL: postgresql+asyncpg://${GAMI_DB_USER:-gami}:${GAMI_DB_PASSWORD:-gami_secure_password}@postgres:5432/${GAMI_DB_NAME:-gami}
+      DATABASE_URL_SYNC: postgresql://${GAMI_DB_USER:-gami}:${GAMI_DB_PASSWORD:-gami_secure_password}@postgres:5432/${GAMI_DB_NAME:-gami}
+
+      # Redis
+      REDIS_URL: redis://redis:6379/0
+
+      # Embeddings (Ollama in docker network)
+      OLLAMA_URL: http://ollama:11434
+      EMBEDDING_MODEL: ${GAMI_EMBEDDING_MODEL:-nomic-embed-text}
+
+      # LLM Backend (configure in .env)
+      GAMI_LLM_BACKEND: ${GAMI_LLM_BACKEND:-ollama}
+      VLLM_URL: ${GAMI_VLLM_URL:-http://localhost:8000/v1}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+
+      # API Settings
+      GAMI_API_PORT: ${GAMI_API_PORT:-9090}
+      GAMI_API_KEY: ${GAMI_API_KEY:-}
+      GAMI_LOG_LEVEL: ${GAMI_LOG_LEVEL:-INFO}
+    ports:
+      - "${GAMI_API_PORT:-9090}:9090"
+    volumes:
+      # Mount storage for file ingestion
+      - ./storage/objects:/app/storage/objects
+      - ./storage/cold:/app/storage/cold
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # GAMI MCP Server (for Claude Code integration)
+  mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gami-mcp
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${GAMI_DB_USER:-gami}:${GAMI_DB_PASSWORD:-gami_secure_password}@postgres:5432/${GAMI_DB_NAME:-gami}
+      DATABASE_URL_SYNC: postgresql://${GAMI_DB_USER:-gami}:${GAMI_DB_PASSWORD:-gami_secure_password}@postgres:5432/${GAMI_DB_NAME:-gami}
+      REDIS_URL: redis://redis:6379/0
+      OLLAMA_URL: http://ollama:11434
+      EMBEDDING_MODEL: ${GAMI_EMBEDDING_MODEL:-nomic-embed-text}
+      GAMI_LLM_BACKEND: ${GAMI_LLM_BACKEND:-ollama}
+      VLLM_URL: ${GAMI_VLLM_URL:-http://localhost:8000/v1}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    command: ["python", "-m", "mcp_tools.server"]
+    # MCP uses stdio, so no ports exposed
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+  # Dream Cycle Worker (background knowledge synthesis)
+  dream:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gami-dream
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${GAMI_DB_USER:-gami}:${GAMI_DB_PASSWORD:-gami_secure_password}@postgres:5432/${GAMI_DB_NAME:-gami}
+      DATABASE_URL_SYNC: postgresql://${GAMI_DB_USER:-gami}:${GAMI_DB_PASSWORD:-gami_secure_password}@postgres:5432/${GAMI_DB_NAME:-gami}
+      REDIS_URL: redis://redis:6379/0
+      OLLAMA_URL: http://ollama:11434
+      EMBEDDING_MODEL: ${GAMI_EMBEDDING_MODEL:-nomic-embed-text}
+      GAMI_LLM_BACKEND: ${GAMI_LLM_BACKEND:-ollama}
+      VLLM_URL: ${GAMI_VLLM_URL:-http://localhost:8000/v1}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Dream cycle settings
+      GAMI_DREAM_DURATION: ${GAMI_DREAM_DURATION:-3600}
+      GAMI_DREAM_INTERVAL: ${GAMI_DREAM_INTERVAL:-21600}
+    command: ["python", "scripts/dream_cycle.py", "--duration", "3600"]
+    restart: unless-stopped
+    profiles:
+      - dream  # Only start with: docker compose --profile dream up
+
+volumes:
+  gami_postgres_data:
+    driver: local
+  gami_redis_data:
+    driver: local
+  gami_ollama_data:
+    driver: local
+
+networks:
+  default:
+    name: gami-network

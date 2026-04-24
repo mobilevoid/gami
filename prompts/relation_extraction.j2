@@ -1,0 +1,17 @@
+Given these entities and the source text, extract relationships between entities. Return a JSON array.
+Each relation must have these fields:
+- "from_entity": name of the source entity
+- "to_entity": name of the target entity
+- "relation_type": one of "USES", "PART_OF", "LOCATED_IN", "RELATED_TO", "DERIVED_FROM", "INSTANCE_OF", "CAUSED_BY", "PRECEDES", "FOLLOWS", "SUPPORTS", "CONTRADICTS", "AUTHORED_BY", "DEFINED_BY", "MENTIONS"
+- "confidence": float 0.0-1.0
+- "description": brief description of the relationship
+
+Known entities:
+{% for entity in entities %}
+- {{ entity.name }} ({{ entity.type }})
+{% endfor %}
+
+Text:
+{{ text }}
+
+Return ONLY a valid JSON array, no other text.

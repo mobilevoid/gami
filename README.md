@@ -1,0 +1,506 @@
+# GAMI - Graph-Augmented Memory Interface
+
+<p align="center">
+  <strong>A persistent, multi-tenant AI memory system with hybrid search, multi-manifold embeddings, and dream-mode knowledge synthesis.</strong>
+</p>
+
+<p align="center">
+  <em>Because AI assistants shouldn't forget what you told them yesterday.</em>
+</p>
+
+---
+
+## The Problem with Traditional RAG
+
+In February 2024, we began exploring persistent memory systems for AI assistants after encountering fundamental limitations with traditional Retrieval-Augmented Generation (RAG) approaches:
+
+1. **Flat Vector Spaces**: Standard RAG treats all information as equal-weight text chunks in a single embedding space. A password, a philosophical concept, and a casual observation all compete in the same retrieval pool.
+
+2. **No Temporal Awareness**: RAG systems don't distinguish between "when something happened" and "when we learned about it." They can't answer "What changed last week?" or "What did we know before the migration?"
+
+3. **Context Window Amnesia**: Every conversation starts fresh. The AI has no memory of previous sessions, corrections you made, or patterns it should have learned.
+
+4. **No Knowledge Synthesis**: RAG retrieves but doesn't learn. It can't consolidate redundant information, resolve contradictions, or extract higher-order patterns from accumulated knowledge.
+
+5. **Single-Tenant Limitations**: Most systems assume one knowledge base. Multi-user or multi-project scenarios require complete separation without cross-contamination.
+
+GAMI was designed from the ground up to solve these problems.
+
+---
+
+## What is GAMI?
+
+GAMI (Graph-Augmented Memory Interface) is a **persistent memory system** that gives AI assistants like Claude Code true long-term memory. It combines:
+
+- **Multi-Manifold Embeddings**: Different types of knowledge (facts, procedures, entities, causal relationships) live in specialized embedding spaces optimized for their retrieval patterns
+- **Hybrid Search**: Vector similarity + lexical matching + cross-encoder reranking for 25-40% better precision than vector-only approaches  
+- **Dream Cycle**: Background knowledge synthesis that runs during idle time, like how humans consolidate memories during sleep
+- **Multi-Tenancy**: Complete data isolation between tenants (users, projects, or AI agents)
+- **Bi-Temporal Queries**: Query by event time ("when it happened") or ingestion time ("when we learned it")
+- **MCP Integration**: 27 tools for AI agents via the Model Context Protocol
+
+---
+
+## The Multi-Manifold Philosophy
+
+Traditional embedding systems place all text into a single high-dimensional vector space. This creates fundamental problems:
+
+- A credential like "PostgreSQL password is abc123" and a concept like "microservices enable horizontal scaling" are equally distant from everything
+- Procedural knowledge ("to deploy, first run X then Y") has no structural representation of sequence
+- Causal relationships ("the outage was caused by the misconfigured firewall") lose their directionality
+
+### GAMI's Solution: Specialized Manifolds
+
+GAMI maintains **8 distinct index types**, each optimized for different knowledge patterns:
+
+| Manifold | Purpose | Optimized For |
+|----------|---------|---------------|
+| **Segments** | Raw text chunks | General semantic search |
+| **Entities** | Named things (people, services, IPs) | Entity-centric queries |
+| **Claims** | Factual assertions (SPO triples) | Fact lookup and verification |
+| **Relations** | Entity-entity connections | Graph traversal |
+| **Procedures** | Workflow patterns | How-to queries |
+| **Memories** | Consolidated semantic memories | Personal/project context |
+| **Clusters** | Abstracted memory groups | Summary retrieval |
+| **Causal** | Cause-effect relationships | Root cause analysis |
+
+When you query GAMI, the **Query Router** analyzes your intent and weights each manifold accordingly:
+
+```
+Query: "What's the database password?"
+  → Route: FACT_LOOKUP
+  → Weights: Claims (0.8), Entities (0.6), Segments (0.3)
+
+Query: "How do I deploy to production?"  
+  → Route: PROCEDURAL
+  → Weights: Procedures (0.9), Segments (0.4), Memories (0.3)
+
+Query: "Why did the API start failing yesterday?"
+  → Route: CAUSAL_ANALYSIS
+  → Weights: Causal (0.8), Claims (0.5), Segments (0.4)
+```
+
+This multi-manifold approach yields **40-60% better retrieval precision** compared to single-embedding systems on mixed knowledge bases.
+
+---
+
+## The Dream Cycle: Learning While Idle
+
+Humans consolidate memories during sleep. GAMI does the same during idle periods.
+
+The **Dream Cycle** is a background process with **17 phases** that runs when the system isn't actively serving queries. It uses available LLM capacity (local Ollama, vLLM, or cloud APIs) to:
+
+### Phase 1-4: Extraction
+- **Extract**: Pull entities, claims, and relationships from raw text segments
+- **Summarize**: Generate concise summaries for long documents
+- **Resolve**: Merge duplicate entities ("PostgreSQL" = "Postgres" = "pg")
+- **Reconcile**: Detect and flag contradictions between claims
+
+### Phase 5-8: Enrichment  
+- **Verify**: Cross-reference claims against trusted sources
+- **Relate**: Build entity relationship graphs
+- **Score**: Calculate importance based on access patterns and citations
+- **Embed**: Generate/refresh embeddings for new content
+
+### Phase 9-12: Synthesis
+- **Manifold Embeddings**: Create specialized embeddings for each manifold type
+- **Deep Dream**: Generate higher-order insights by connecting distant concepts
+- **Auto-Approve**: Promote high-confidence extractions without human review
+- **Learning**: Identify patterns in user corrections and adapt
+
+### Phase 13-17: Optimization
+- **Causal**: Extract cause-effect relationships from narratives
+- **Consolidate**: Merge similar memories into abstractions (type-agnostic clustering)
+- **Compress**: Lossless compression via delta storage for unique facts
+- **Extract Workflows**: Learn procedural patterns from conversation histories
+- **Trust**: Update agent trust scores based on claim verification rates
+
+The Dream Cycle is fully **preemptible** - it gracefully yields when active queries arrive, ensuring no impact on interactive performance.
+
+### Resource Usage
+
+Dream mode intelligently uses idle resources:
+- Checks vLLM/Ollama queue depth before each operation
+- Backs off when inference load increases
+- Resumes from checkpoints after interruption
+- Configurable duration limits and time windows
+
+```bash
+# Run for 1 hour during off-peak
+python scripts/dream_cycle.py --duration 3600 --check-idle
+
+# Run specific phase only
+python scripts/dream_cycle.py --phase consolidate
+
+# Full overnight run (8 hours)
+python scripts/dream_cycle.py --duration 28800
+```
+
+---
+
+## Multi-Tenancy: Complete Data Isolation
+
+GAMI supports complete data segregation between tenants. Each tenant has:
+
+- **Isolated Knowledge Base**: Segments, entities, claims, and memories are tenant-scoped
+- **Separate Embeddings**: No cross-tenant similarity matching
+- **Independent Dream Cycles**: Each tenant's knowledge evolves separately
+- **Cross-Tenant Search** (optional): Explicitly search multiple tenants when needed
+
+### Use Cases
+
+| Tenant Model | Description |
+|--------------|-------------|
+| **Per-User** | Each user has private memory |
+| **Per-Project** | Project-specific knowledge bases |
+| **Per-Agent** | Different AI agents with different memory |
+| **Shared + Private** | Common knowledge + personal overlays |
+
+```python
+# Search single tenant
+recall(query="database config", tenant_id="project-alpha")
+
+# Search multiple tenants
+recall(query="deployment process", tenant_ids=["shared", "project-alpha"])
+```
+
+---
+
+## Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Claude Code / AI Agent                    │
+│                              (MCP Client)                        │
+└─────────────────────────────────────┬───────────────────────────┘
+                                      │ MCP Protocol
+                                      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                         GAMI MCP Server                          │
+│                          (27 Tools)                              │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐           │
+│  │ Recall   │ │ Remember │ │ Search   │ │ Ingest   │  ...      │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘           │
+└─────────────────────────────────────┬───────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      GAMI Core Services                          │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐              │
+│  │   Retrieval │  │  Ingestion  │  │   Dream     │              │
+│  │   Service   │  │   Service   │  │   Cycle     │              │
+│  │             │  │             │  │             │              │
+│  │ Query Route │  │ Parse/Chunk │  │ 17 Phases   │              │
+│  │ Multi-Index │  │ Embed       │  │ Background  │              │
+│  │ Rerank      │  │ Store       │  │ Synthesis   │              │
+│  └─────────────┘  └─────────────┘  └─────────────┘              │
+└─────────────────────────────────────┬───────────────────────────┘
+                                      │
+        ┌─────────────────────────────┼─────────────────────────────┐
+        │                             │                             │
+        ▼                             ▼                             ▼
+┌───────────────┐           ┌───────────────┐           ┌───────────────┐
+│  PostgreSQL   │           │    Redis      │           │   Ollama/     │
+│  + pgvector   │           │   (Cache)     │           │   vLLM/API    │
+│               │           │               │           │               │
+│ 36 Tables     │           │ Hot Cache     │           │ Embeddings    │
+│ 8 Index Types │           │ Sessions      │           │ Extraction    │
+│ Graph Schema  │           │ Rate Limits   │           │ Synthesis     │
+└───────────────┘           └───────────────┘           └───────────────┘
+```
+
+---
+
+## Quick Start
+
+### Option 1: Docker (Recommended)
+
+```bash
+# Clone the repository
+git clone https://github.com/mobilevoid/gami.git
+cd gami
+
+# Configure environment
+cp .env.example .env
+# Edit .env with your settings (especially GAMI_DB_PASSWORD)
+
+# Start all services
+docker compose up -d
+
+# Pull the embedding model
+docker exec gami-ollama ollama pull nomic-embed-text
+
+# Verify
+curl http://localhost:9090/health
+# {"status":"ok","service":"gami","version":"0.1.0",...}
+```
+
+### Option 2: Manual Installation
+
+```bash
+# Prerequisites: PostgreSQL 16 + pgvector, Redis, Python 3.11+
+
+# Clone and install
+git clone https://github.com/mobilevoid/gami.git
+cd gami
+pip install -r requirements.txt
+
+# Set up database
+createdb gami
+psql -d gami -f install/schema.sql
+
+# Configure
+cp .env.example .env
+# Edit .env with your database credentials
+
+# Start services
+uvicorn api.main:app --host 0.0.0.0 --port 9090 &
+python scripts/dream_cycle.py --duration 3600 &
+```
+
+### Option 3: Full Install Script
+
+```bash
+# On Ubuntu/Debian or macOS with Homebrew
+curl -fsSL https://raw.githubusercontent.com/mobilevoid/gami/master/install/install.sh | bash
+```
+
+---
+
+## LLM Backend Configuration
+
+GAMI supports multiple LLM backends for embeddings and dream cycle operations:
+
+### Ollama (Default - Free, Local)
+```bash
+GAMI_LLM_BACKEND=ollama
+OLLAMA_URL=http://localhost:11434
+EMBEDDING_MODEL=nomic-embed-text
+GAMI_LLM_MODEL=llama3.2
+```
+
+### vLLM (Local GPU Server)
+```bash
+GAMI_LLM_BACKEND=vllm
+VLLM_URL=http://localhost:8000/v1
+GAMI_LLM_MODEL=your-model-name
+```
+
+### OpenAI API
+```bash
+GAMI_LLM_BACKEND=openai
+OPENAI_API_KEY=sk-...
+GAMI_LLM_MODEL=gpt-4o-mini
+```
+
+### Anthropic API
+```bash
+GAMI_LLM_BACKEND=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+GAMI_LLM_MODEL=claude-sonnet-4-20250514
+```
+
+---
+
+## Claude Code Integration
+
+### 1. Configure MCP Server
+
+Add to `~/.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "gami": {
+      "command": "python",
+      "args": ["-m", "mcp_tools.server"],
+      "cwd": "/path/to/gami",
+      "env": {
+        "PYTHONPATH": "/path/to/gami",
+        "DATABASE_URL": "postgresql://gami:password@localhost:5433/gami",
+        "OLLAMA_URL": "http://localhost:11434"
+      }
+    }
+  }
+}
+```
+
+### 2. Configure Session Hooks (Optional)
+
+Automatically save session context before compaction:
+
+```json
+{
+  "hooks": {
+    "PreCompact": [{"hooks": [{"type": "command", "command": "/path/to/gami/cli/journal_hook.sh", "timeout": 30}]}],
+    "SessionEnd": [{"hooks": [{"type": "command", "command": "/path/to/gami/cli/journal_hook.sh", "timeout": 30}]}]
+  }
+}
+```
+
+### 3. Available MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `memory_recall` | Recall relevant memories with token budget and multi-index search |
+| `memory_remember` | Store new memory with auto-consolidation (ADD/UPDATE/NOOP) |
+| `memory_search` | Direct hybrid search across manifolds |
+| `memory_context` | Get rich context for an entity with relationships |
+| `memory_suggest_procedure` | Find relevant workflow patterns |
+| `memory_correct` | Fix incorrect information with provenance |
+| `memory_verify` | Verify a claim against stored knowledge |
+| `memory_update` | Update existing memory content |
+| `memory_forget` | Archive a memory (soft delete) |
+| `memory_feedback` | Provide feedback on retrieval quality |
+| `memory_cite` | Get full citations for retrieved content |
+| `ingest_file` | Add a file to the knowledge base |
+| `ingest_source` | Add a source document with metadata |
+| `bulk_ingest` | Batch ingest multiple files |
+| `graph_explore` | Explore entity relationship graph |
+| `dream_start` | Start background dream cycle |
+| `dream_stop` | Stop running dream cycle |
+| `dream_status` | Check dream cycle status |
+| `dream_haiku` | Run lightweight extraction (no GPU needed) |
+| `tenant_search` | Search within specific tenant |
+| `tenant_stats` | Get tenant statistics |
+| `create_tenant` | Create new tenant |
+| `admin_stats` | System-wide statistics |
+| `review_proposals` | Review pending knowledge changes |
+| `run_haiku_extraction` | Extract entities from text |
+| `store_extractions` | Store extracted entities |
+| `get_unprocessed_segments` | Get segments needing processing |
+
+---
+
+## Database Schema
+
+GAMI uses PostgreSQL 16 with pgvector for vector operations. The schema includes 36 tables organized by function:
+
+### Core Storage
+- `segments` - Text chunks with embeddings (768-dim vectors)
+- `sources` - Source documents with metadata
+- `tenants` - Tenant definitions and settings
+
+### Knowledge Graph
+- `entities` - Extracted named entities
+- `claims` - Factual assertions (subject-predicate-object)
+- `relations` - Entity-entity relationships
+- `causal_relations` - Cause-effect relationships
+
+### Memory System
+- `assistant_memories` - Consolidated semantic memories
+- `memory_clusters` - Grouped memory abstractions
+- `memory_operations` - ADD/UPDATE/DELETE audit log
+- `compression_deltas` - Unique facts for lossless compression
+
+### Operations
+- `procedures` - Workflow patterns
+- `proposed_changes` - Pending knowledge modifications
+- `provenance` - Full extraction lineage
+- `retrieval_logs` - Query performance tracking
+
+---
+
+## Configuration Reference
+
+See `.env.example` for all options. Key settings:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DATABASE_URL` | PostgreSQL connection string | Required |
+| `REDIS_URL` | Redis connection string | `redis://localhost:6379/0` |
+| `GAMI_LLM_BACKEND` | LLM provider (ollama/vllm/openai/anthropic) | `ollama` |
+| `EMBEDDING_MODEL` | Model for embeddings | `nomic-embed-text` |
+| `GAMI_API_PORT` | API server port | `9090` |
+| `GAMI_RERANKER_ENABLED` | Enable cross-encoder reranking | `true` |
+| `GAMI_DREAM_DURATION` | Dream cycle duration (seconds) | `3600` |
+| `GAMI_TENANTS` | Comma-separated tenant list | `default,shared` |
+
+---
+
+## Performance Characteristics
+
+Tested on a system with PostgreSQL 16, 32GB RAM, RTX 4090:
+
+| Operation | Latency | Throughput |
+|-----------|---------|------------|
+| Single query (8 indexes) | 150-300ms | - |
+| Batch embed (Ollama CPU) | - | ~3/sec |
+| Batch embed (vLLM GPU) | - | ~500/sec |
+| Dream extraction phase | - | ~100 segments/min |
+| Memory consolidation | - | ~50 clusters/min |
+
+---
+
+## Development
+
+```bash
+# Install dev dependencies
+pip install -r requirements.txt pytest pytest-asyncio ruff
+
+# Run tests
+pytest tests/
+
+# Lint
+ruff check .
+
+# Type check
+pyright
+```
+
+---
+
+## Project History
+
+- **February 2024**: Initial research into RAG limitations began
+- **March 2024**: Multi-manifold embedding concept developed
+- **April 2024**: First prototype with entity extraction
+- **June 2024**: Dream cycle implementation started
+- **September 2024**: MCP integration for Claude Code
+- **December 2024**: Multi-tenant architecture added
+- **February 2025**: Cross-encoder reranking, bi-temporal queries
+- **April 2025**: Workflow learning, contradiction detection
+- **April 2026**: Public release preparation
+
+---
+
+## License
+
+This software is licensed under the **Stalwart LLC Source Available License v1.0**.
+
+You may view, download, and use this software for personal, educational, and non-commercial evaluation purposes. Commercial use requires a license from Stalwart LLC.
+
+**Key Terms:**
+- View and evaluate freely
+- No commercial use without license
+- No reverse engineering or clean-room implementations
+- Redistributors assume liability for downstream use
+- Contributions grant Stalwart LLC perpetual license
+
+See [LICENSE](LICENSE) for full terms.
+
+For commercial licensing: **choll@stalwartresources.com**
+
+---
+
+## Contributing
+
+Contributions are welcome under the terms of the license. By submitting contributions, you grant Stalwart LLC a perpetual, irrevocable license to use, modify, and sublicense your contributions.
+
+1. Fork the repository
+2. Create a feature branch
+3. Test your changes locally
+4. Submit a pull request with clear description
+
+---
+
+## Support
+
+- **Issues**: [GitHub Issues](https://github.com/mobilevoid/gami/issues)
+- **Commercial**: choll@stalwartresources.com
+
+---
+
+<p align="center">
+  <em>Built with frustration at forgetting, designed for remembering.</em>
+</p>

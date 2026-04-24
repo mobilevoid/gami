@@ -1,0 +1,96 @@
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# Storage (user data)
+storage/objects/
+storage/cold/
+backups/
+models/
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth
+
+# Logs
+*.log
+logs/
+/tmp/
+
+# Database
+*.sqlite
+*.db
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Build artifacts
+*.egg-info/
+.eggs/
+
+# Local scripts (may contain infrastructure-specific code)
+scripts/local/
+scripts/*_local.py
+
+# Uploads and user content
+uploads/
+
+# Cache
+.cache/

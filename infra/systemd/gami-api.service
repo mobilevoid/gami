@@ -1,0 +1,21 @@
+[Unit]
+Description=GAMI API Server
+After=network.target postgresql@16-main.service redis-server.service
+Wants=postgresql@16-main.service redis-server.service
+
+[Service]
+Type=simple
+User=ai
+Group=ai
+WorkingDirectory=/opt/gami
+Environment=PYTHONPATH=/opt/gami
+EnvironmentFile=/opt/gami/.env
+ExecStart=/usr/local/anaconda3/bin/python -m uvicorn api.main:app --host 0.0.0.0 --port 9090 --workers 2
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gami-api
+
+[Install]
+WantedBy=multi-user.target
