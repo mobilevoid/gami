@@ -26,9 +26,9 @@ GAMI_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if GAMI_ROOT not in sys.path:
     sys.path.insert(0, GAMI_ROOT)
 
-JSONL_GLOB = "/home/ai/.claude/projects/-home-ai/*.jsonl"
-CUTOFF_SECONDS = 2100  # 35 minutes
-TENANT_ID = "claude-opus"
+JSONL_GLOB = os.getenv("GAMI_JOURNAL_GLOB", os.path.expanduser("~/.claude/projects/*/*.jsonl"))
+CUTOFF_SECONDS = int(os.getenv("GAMI_JOURNAL_CUTOFF", "2100"))  # 35 minutes
+TENANT_ID = os.getenv("GAMI_TENANT", "default")
 
 
 def main():

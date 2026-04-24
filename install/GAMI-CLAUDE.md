@@ -44,7 +44,7 @@ Then restart Claude Code to load the MCP tools.
 When `memory_recall` returns information you KNOW is wrong — wrong password, wrong IP, outdated fact, or the user tells you something has changed — call `memory_correct` IMMEDIATELY. Do not wait for the user to ask.
 
 ```
-memory_correct(item_type="memory", search_text="CT231 password",
+memory_correct(item_type="memory", search_text="database password",
                wrong_value="old_pass", correct_value="new_pass",
                reason="User confirmed new password")
 ```

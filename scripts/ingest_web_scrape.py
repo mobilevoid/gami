@@ -132,16 +132,16 @@ def ingest_file(path, tenant_id):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--tenant", default="dene-websites")
+    parser.add_argument("--tenant", default="websites")
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--dir", action="append", dest="dirs", help="Directories to scrape")
     args = parser.parse_args()
 
-    # Collect all files from both scrape directories
-    dirs = [
-        "/mnt/16tb/Web_Scrape/breadandbutter/articles/",
-        "/mnt/16tb/Web_Scrape/breadandbutter/blogs/",
-        "/mnt/16tb/Web_Scrape/breadandbutter/html/",
-        "/mnt/16tb/Web_Scrape/phenomena/html/",
+    # Collect all files from scrape directories
+    # Example directories - customize for your setup:
+    dirs = args.dirs or [
+        # "/path/to/scraped/articles/",
+        # "/path/to/scraped/blogs/",
     ]
 
     files = []
@@ -153,11 +153,12 @@ def main():
                 if fname.endswith(('.txt', '.html', '.htm')):
                     files.append(os.path.join(root, fname))
 
-    # Also PDFs from breadandbutter
-    pdf_dir = "/mnt/16tb/Web_Scrape/breadandbutter/"
-    for fname in os.listdir(pdf_dir):
-        if fname.endswith('.pdf'):
-            files.append(os.path.join(pdf_dir, fname))
+    # Also PDFs from a specific directory (customize for your setup)
+    pdf_dir = os.getenv("GAMI_PDF_DIR", "")
+    if pdf_dir and os.path.isdir(pdf_dir):
+        for fname in os.listdir(pdf_dir):
+            if fname.endswith('.pdf'):
+                files.append(os.path.join(pdf_dir, fname))
 
     log.info(f"Found {len(files)} files to ingest into '{args.tenant}'")
 

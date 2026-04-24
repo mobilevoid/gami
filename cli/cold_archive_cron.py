@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """GAMI Cold Storage Archival Cron — archive stale segments and entities.
 
-Runs daily to move old, low-importance data to cold storage on /mnt/16tb/gami/.
+Runs daily to move old, low-importance data to cold storage.
 Segments older than 90 days and entities older than 180 days are archived.
 """
 import logging

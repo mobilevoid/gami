@@ -202,7 +202,7 @@ with engine_sync.connect() as conn:
     # Seed default tenants
     PGPASSWORD="$DB_PASS" psql -h localhost -p "$PG_PORT" -U "$DB_USER" -d "$DB_NAME" -c "
         INSERT INTO tenants (tenant_id, display_name, status) VALUES
-            ('claude-opus', 'Claude Opus', 'active'),
+            ('default', 'Claude Opus', 'active'),
             ('shared', 'Shared', 'active'),
             ('background-worker', 'Background Worker', 'active')
         ON CONFLICT (tenant_id) DO NOTHING;

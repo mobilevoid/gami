@@ -19,12 +19,12 @@ TRIGGER=$(echo "$INPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); p
 JSONL_FILE=""
 if [ -n "$SESSION_ID" ]; then
     # Look for the JSONL file matching this session
-    CANDIDATE="/home/ai/.claude/projects/-home-ai/${SESSION_ID}.jsonl"
+    CANDIDATE="${HOME}/.claude/projects/${SESSION_ID}.jsonl"
     if [ -f "$CANDIDATE" ]; then
         JSONL_FILE="$CANDIDATE"
     else
         # Search other project dirs
-        for d in /home/ai/.claude/projects/*/; do
+        for d in ${HOME}/.claude/projects/*/; do
             if [ -f "${d}${SESSION_ID}.jsonl" ]; then
                 JSONL_FILE="${d}${SESSION_ID}.jsonl"
                 break
@@ -44,19 +44,20 @@ if [ -z "$JSONL_FILE" ] || [ ! -f "$JSONL_FILE" ]; then
 fi
 
 # Ingest via the journal CLI (async, don't block Claude Code)
-export PYTHONPATH=/opt/gami
-/usr/local/anaconda3/bin/python /opt/gami/cli/gami_journal.py save \
+GAMI_DIR="${GAMI_DIR:-/opt/gami}"
+export PYTHONPATH="$GAMI_DIR"
+python3 "${GAMI_DIR}/cli/gami_journal.py" save \
     --session "${SESSION_ID:-unknown}" \
     --session-file "$JSONL_FILE" \
     --trigger "$TRIGGER" \
-    --tenant claude-opus \
+    --tenant "${GAMI_TENANT:-default}" \
     >> /tmp/gami-journal-hook.log 2>&1 || true
 
 # Post-ingest: spawn Haiku agent to extract entities from new segments
 # Runs in background so it doesn't block Claude Code
 # Uses OAuth billing (subscription), ensures Ollama is running for embeddings
-if [ -x /opt/gami/cli/process_segments.sh ]; then
-    nohup /opt/gami/cli/process_segments.sh >> /tmp/gami-process-segments.log 2>&1 &
+if [ -x "${GAMI_DIR}/cli/process_segments.sh" ]; then
+    nohup "${GAMI_DIR}/cli/process_segments.sh" >> /tmp/gami-process-segments.log 2>&1 &
 fi
 
 exit 0

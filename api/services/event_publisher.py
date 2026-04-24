@@ -29,7 +29,7 @@ def _get_redis() -> redis.Redis:
 def publish_event(
     event_type: str,
     session_id: Optional[str] = None,
-    tenant_id: str = "claude-opus",
+    tenant_id: str = "default",
     agent_id: Optional[str] = None,
     **kwargs
 ) -> bool:
@@ -68,7 +68,7 @@ def publish_event(
 def publish_query_event(
     session_id: str,
     query: str,
-    tenant_id: str = "claude-opus",
+    tenant_id: str = "default",
     agent_id: Optional[str] = None,
     results: Optional[List[dict]] = None,
 ) -> bool:
@@ -87,7 +87,7 @@ def publish_message_event(
     session_id: str,
     message: str,
     message_type: str = "user",
-    tenant_id: str = "claude-opus",
+    tenant_id: str = "default",
     agent_id: Optional[str] = None,
     entities: Optional[List[str]] = None,
 ) -> bool:
@@ -105,7 +105,7 @@ def publish_message_event(
 
 def publish_session_start(
     session_id: str,
-    tenant_id: str = "claude-opus",
+    tenant_id: str = "default",
     agent_id: Optional[str] = None,
 ) -> bool:
     """Publish session start event."""

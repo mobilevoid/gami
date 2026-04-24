@@ -2,7 +2,7 @@ import os
 #!/usr/bin/env python3
 """Re-embed everything with sentence-transformers nomic-embed-text-v1.5.
 
-Run with: /home/ai/.conda/envs/gami-embed/bin/python scripts/reembed_all.py
+Run with: python scripts/reembed_all.py
 
 Identical on CPU and GPU. Replaces all Ollama embeddings.
 """

@@ -20,7 +20,7 @@ MODEL_NAME = "nomic-ai/nomic-embed-text-v1.5"
 # Find the gami-embed python
 EMBED_PYTHON = None
 for p in [
-    "/home/ai/.conda/envs/gami-embed/bin/python",
+    "python3",
     os.path.expanduser("~/.conda/envs/gami-embed/bin/python"),
 ]:
     if os.path.exists(p):
@@ -64,7 +64,7 @@ def _embed_subprocess(texts: list[str]) -> list[list[float]]:
         raise RuntimeError(
             "gami-embed conda env not found. Install with:\n"
             "  conda create -n gami-embed python=3.10 -y\n"
-            "  /home/ai/.conda/envs/gami-embed/bin/pip install torch sentence-transformers einops"
+            "  pip install torch sentence-transformers einops"
         )
     script = (
         "import sys, json\n"

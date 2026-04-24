@@ -5,7 +5,7 @@ import os
 This loads the same nomic-embed-text GGUF that Ollama uses, directly on GPU.
 Produces identical embeddings to Ollama but at GPU speed (~500-1000/s vs ~3/s CPU).
 
-Run with: /home/ai/.conda/envs/Training/bin/python scripts/gpu_embed_gguf.py
+Run with: python scripts/gpu_embed_gguf.py
 """
 import time, logging
 import numpy as np

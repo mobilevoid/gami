@@ -4,7 +4,7 @@
 Usage:
     python -m cli.ingest_cmd --path '*.md' --type markdown --tenant shared
     python -m cli.ingest_cmd --path /path/to/file.md --type markdown
-    python -m cli.ingest_cmd --path '/home/ai/clawd/*.md' --type markdown --tenant clawd
+    python -m cli.ingest_cmd --path '/path/to/docs/*.md' --type markdown --tenant docs
 """
 import argparse
 import glob

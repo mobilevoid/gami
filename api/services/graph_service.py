@@ -264,7 +264,7 @@ async def get_cluster(
 
 async def get_entity_by_name(
     name: str,
-    tenant_id: str = "claude-opus",
+    tenant_id: str = "default",
     db: Optional[AsyncSession] = None,
 ) -> Optional[dict]:
     """Look up an entity by canonical name (case-insensitive)."""

@@ -586,7 +586,7 @@ class SentenceTransformersProvider(BaseEmbeddingProvider):
     def _find_embed_python(self) -> Optional[str]:
         """Find the gami-embed conda environment python."""
         candidates = [
-            "/home/ai/.conda/envs/gami-embed/bin/python",
+            "python3",
             os.path.expanduser("~/.conda/envs/gami-embed/bin/python"),
             "/opt/gami/.venv/bin/python",
         ]

@@ -45,7 +45,7 @@ class Settings:
 
     # Storage
     OBJECT_STORE: str = os.getenv("GAMI_OBJECT_STORE", "/opt/gami/storage/objects")
-    COLD_STORE: str = os.getenv("GAMI_COLD_STORE", "/mnt/16tb/gami")
+    COLD_STORE: str = os.getenv("GAMI_COLD_STORE", "/var/lib/gami/cold")
 
     # Logging
     LOG_LEVEL: str = os.getenv("GAMI_LOG_LEVEL", "INFO")

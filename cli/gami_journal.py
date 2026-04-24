@@ -34,7 +34,7 @@ if GAMI_ROOT not in sys.path:
     sys.path.insert(0, GAMI_ROOT)
 
 DEFAULT_API = "http://127.0.0.1:9090"
-DEFAULT_TENANT = "claude-opus"
+DEFAULT_TENANT = os.getenv("GAMI_TENANT", "default")
 
 
 def cmd_save(args):
@@ -343,10 +343,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    gami-journal save --session abc123 --session-file session.jsonl --tenant claude-opus
-    gami-journal list --tenant claude-opus --last 10
-    gami-journal search "database migration" --tenant claude-opus
-    gami-journal export --tenant claude-opus --format markdown --output journal.md
+    gami-journal save --session abc123 --session-file session.jsonl --tenant default
+    gami-journal list --tenant default --last 10
+    gami-journal search "database migration" --tenant default
+    gami-journal export --tenant default --format markdown --output journal.md
         """,
     )
     parser.add_argument(

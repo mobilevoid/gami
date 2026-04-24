@@ -116,7 +116,7 @@ async def _memory_recall(args: dict) -> dict:
     from api.services.retrieval import recall
 
     query = args["query"]
-    tenant_id = args.get("tenant_id", "claude-opus")
+    tenant_id = args.get("tenant_id", "default")
     tenant_ids = args.get("tenant_ids")
     max_tokens = args.get("max_tokens", 2000)
     session_id = args.get("session_id")
@@ -204,7 +204,7 @@ async def _memory_remember(args: dict) -> dict:
     text_content = args["text"]
     memory_type = args.get("memory_type", "fact")
     subject_id = args.get("subject_id", "general")
-    tenant_id = args.get("tenant_id", "claude-opus")
+    tenant_id = args.get("tenant_id", "default")
     importance = args.get("importance", 0.5)
     skip_consolidation = args.get("skip_consolidation", False)
     agent_id = args.get("agent_id")
@@ -470,7 +470,7 @@ async def _memory_verify(args: dict) -> dict:
     from sqlalchemy import text as sql_text
 
     statement = args["statement"]
-    tenant_id = args.get("tenant_id", "claude-opus")
+    tenant_id = args.get("tenant_id", "default")
 
     # Search for related claims
     embedding = await embed_text(statement)
@@ -543,7 +543,7 @@ async def _memory_search(args: dict) -> dict:
     from api.services.db import AsyncSessionLocal
 
     query = args["query"]
-    tenant_ids = args.get("tenant_ids") or [args.get("tenant_id", "claude-opus")]
+    tenant_ids = args.get("tenant_ids") or [args.get("tenant_id", "default")]
     limit = args.get("limit", 20)
     mode = args.get("search_mode", "hybrid")
 
@@ -584,7 +584,7 @@ async def _memory_context(args: dict) -> dict:
 
     entity_id = args.get("entity_id")
     entity_name = args.get("entity_name")
-    tenant_id = args.get("tenant_id", "claude-opus")
+    tenant_id = args.get("tenant_id", "default")
 
     async with AsyncSessionLocal() as db:
         # Resolve entity
@@ -731,7 +731,7 @@ async def _graph_explore(args: dict) -> dict:
 
     entity_id = args.get("entity_id")
     entity_name = args.get("entity_name")
-    tenant_id = args.get("tenant_id", "claude-opus")
+    tenant_id = args.get("tenant_id", "default")
     depth = min(args.get("depth", 2), 4)
     limit = min(args.get("limit", 50), 200)
     rel_filter = args.get("relation_types")
@@ -922,7 +922,7 @@ async def _get_unprocessed_segments(args: dict) -> dict:
     from sqlalchemy import text as sql_text
 
     limit = args.get("limit", 20)
-    tenant_id = args.get("tenant_id", "claude-opus")
+    tenant_id = args.get("tenant_id", "default")
     min_length = args.get("min_length", 200)
     max_length = args.get("max_length", 3000)
 
@@ -973,7 +973,7 @@ async def _store_extractions(args: dict) -> dict:
     segment_id = args["segment_id"]
     source_id = args.get("source_id", "")
     entities = args.get("entities", [])
-    tenant_id = args.get("tenant_id", "claude-opus")
+    tenant_id = args.get("tenant_id", "default")
 
     def gen_id(prefix, name):
         h = hashlib.md5(name.encode()).hexdigest()[:8]
@@ -1017,7 +1017,7 @@ async def _ingest_file(args: dict) -> dict:
     import subprocess
 
     file_path = args["file_path"]
-    tenant_id = args.get("tenant_id", "claude-opus")
+    tenant_id = args.get("tenant_id", "default")
     source_type = args.get("source_type", "markdown")
 
     import os
@@ -1131,7 +1131,7 @@ async def _dream_haiku(args: dict) -> dict:
         row = await db.execute(sql_text(
             "SELECT count(*) FROM segments s "
             "WHERE length(s.text) BETWEEN 200 AND 3000 "
-            "AND s.owner_tenant_id = 'claude-opus' "
+            "AND s.owner_tenant_id = 'default' "
             "AND s.segment_type NOT IN ('tool_call', 'tool_result', 'chunk') "
             "AND NOT EXISTS (SELECT 1 FROM provenance p WHERE p.segment_id = s.segment_id)"
         ))
@@ -1211,7 +1211,7 @@ async def _run_haiku_extraction(args: dict) -> dict:
         row = await db.execute(sql_text(
             "SELECT count(*) FROM segments s "
             "WHERE length(s.text) BETWEEN 200 AND 3000 "
-            "AND s.owner_tenant_id = 'claude-opus' "
+            "AND s.owner_tenant_id = 'default' "
             "AND s.segment_type NOT IN ('tool_call', 'tool_result', 'chunk') "
             "AND NOT EXISTS (SELECT 1 FROM provenance p WHERE p.segment_id = s.segment_id)"
         ))
@@ -1272,7 +1272,7 @@ async def _memory_correct(args: dict) -> dict:
     wrong_value = args.get("wrong_value", "")  # what's wrong
     correct_value = args["correct_value"]  # what it should be
     reason = args.get("reason", "Corrected during conversation")
-    tenant_id = args.get("tenant_id", "claude-opus")
+    tenant_id = args.get("tenant_id", "default")
 
     # Check knowledge tier — refuse to correct reference/historical content
     async with AsyncSessionLocal() as db:
@@ -1288,7 +1288,7 @@ async def _memory_correct(args: dict) -> dict:
                 f"Cannot correct items in '{tenant_id}' — this is a {tier} knowledge tier. "
                 f"Reference/historical content is preserved as-is to maintain source integrity. "
                 f"It represents what the source claims, not operational truth. "
-                f"To correct operational data, target the 'claude-opus' or 'shared' tenant instead."
+                f"To correct operational data, target the 'default' or 'shared' tenant instead."
             ),
             "knowledge_tier": tier,
         }
@@ -1501,7 +1501,7 @@ async def _memory_suggest_procedure(args: dict) -> dict:
         return {"error": "query required"}
 
     context = args.get("context", "")
-    tenant_id = args.get("tenant_id", "claude-opus")
+    tenant_id = args.get("tenant_id", "default")
     limit = args.get("limit", 5)
     min_confidence = args.get("min_confidence", 0.4)
 
@@ -1813,7 +1813,7 @@ async def _review_proposals(args: dict) -> dict:
                                {"m": prop.target_id})
             
             await db.execute(text("""
-                UPDATE proposed_changes SET status = 'approved', reviewed_by = 'claude-opus', 
+                UPDATE proposed_changes SET status = 'approved', reviewed_by = 'default', 
                     reviewed_at = NOW(), review_notes = 'Approved by Claude'
                 WHERE proposal_id = :pid
             """), {"pid": proposal_id})
@@ -1823,7 +1823,7 @@ async def _review_proposals(args: dict) -> dict:
         elif action == "reject" and proposal_id:
             notes = args.get("reason", "Rejected by Claude")
             await db.execute(text("""
-                UPDATE proposed_changes SET status = 'rejected', reviewed_by = 'claude-opus',
+                UPDATE proposed_changes SET status = 'rejected', reviewed_by = 'default',
                     reviewed_at = NOW(), review_notes = :notes
                 WHERE proposal_id = :pid
             """), {"pid": proposal_id, "notes": notes})

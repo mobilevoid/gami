@@ -22,7 +22,7 @@ TOOL_DEFINITIONS = {
                 "tenant_id": {
                     "type": "string",
                     "description": "Tenant ID to search within",
-                    "default": "claude-opus",
+                    "default": "default",
                 },
                 "tenant_ids": {
                     "type": "array",
@@ -97,7 +97,7 @@ TOOL_DEFINITIONS = {
                 "tenant_id": {
                     "type": "string",
                     "description": "Tenant ID that owns this memory",
-                    "default": "claude-opus",
+                    "default": "default",
                 },
                 "importance": {
                     "type": "number",
@@ -202,7 +202,7 @@ TOOL_DEFINITIONS = {
                 "tenant_id": {
                     "type": "string",
                     "description": "Tenant context for verification",
-                    "default": "claude-opus",
+                    "default": "default",
                 },
             },
             "required": ["statement"],
@@ -224,7 +224,7 @@ TOOL_DEFINITIONS = {
                 "tenant_id": {
                     "type": "string",
                     "description": "Tenant ID",
-                    "default": "claude-opus",
+                    "default": "default",
                 },
                 "tenant_ids": {
                     "type": "array",
@@ -268,7 +268,7 @@ TOOL_DEFINITIONS = {
                 "tenant_id": {
                     "type": "string",
                     "description": "Tenant context",
-                    "default": "claude-opus",
+                    "default": "default",
                 },
                 "include_claims": {
                     "type": "boolean",
@@ -351,7 +351,7 @@ TOOL_DEFINITIONS = {
                 "tenant_id": {
                     "type": "string",
                     "description": "Tenant context",
-                    "default": "claude-opus",
+                    "default": "default",
                 },
                 "limit": {
                     "type": "integer",
@@ -396,7 +396,7 @@ TOOL_DEFINITIONS = {
                 "tenant_id": {
                     "type": "string",
                     "description": "Tenant to search within",
-                    "default": "claude-opus",
+                    "default": "default",
                 },
                 "min_length": {
                     "type": "integer",
@@ -444,7 +444,7 @@ TOOL_DEFINITIONS = {
                 "tenant_id": {
                     "type": "string",
                     "description": "Tenant ID",
-                    "default": "claude-opus",
+                    "default": "default",
                 },
             },
             "required": ["segment_id", "entities"],
@@ -467,7 +467,7 @@ TOOL_DEFINITIONS = {
                 "tenant_id": {
                     "type": "string",
                     "description": "Tenant to own this content",
-                    "default": "claude-opus",
+                    "default": "default",
                 },
                 "source_type": {
                     "type": "string",
@@ -561,7 +561,7 @@ TOOL_DEFINITIONS = {
                 "tenant_id": {
                     "type": "string",
                     "description": "Tenant scope",
-                    "default": "claude-opus",
+                    "default": "default",
                 },
             },
             "required": ["item_type", "correct_value"],
@@ -616,7 +616,7 @@ TOOL_DEFINITIONS = {
                 "tenant_id": {
                     "type": "string",
                     "description": "Tenant ID",
-                    "default": "claude-opus",
+                    "default": "default",
                 },
                 "limit": {
                     "type": "integer",

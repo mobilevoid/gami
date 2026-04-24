@@ -139,19 +139,18 @@ def process_html_dir(html_dir, base_url, images_dir):
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Download images from scraped HTML files")
+    parser.add_argument("--html-dir", required=True, help="Directory containing HTML files")
+    parser.add_argument("--images-dir", required=True, help="Directory to save images")
+    parser.add_argument("--base-url", required=True, help="Base URL for resolving relative URLs")
     args = parser.parse_args()
 
+    # Process single site from command-line arguments
     sites = [
         {
-            "html_dir": "/mnt/16tb/Web_Scrape/breadandbutter/html/",
-            "images_dir": "/mnt/16tb/Web_Scrape/breadandbutter/images/",
-            "base_url": "http://www.breadandbutterscience.com",
-        },
-        {
-            "html_dir": "/mnt/16tb/Web_Scrape/phenomena/html/",
-            "images_dir": "/mnt/16tb/Web_Scrape/phenomena/images/",
-            "base_url": "http://www.phenomena.org.uk",
+            "html_dir": args.html_dir,
+            "images_dir": args.images_dir,
+            "base_url": args.base_url,
         },
     ]
 

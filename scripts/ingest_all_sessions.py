@@ -4,8 +4,11 @@
 Uses direct Python imports (sync DB path) to avoid HTTP timeout issues
 with large files. The API server is NOT required for this script.
 
+NOTE: This is an example script. Customize the DATA_SOURCES and tenant IDs
+below for your specific setup.
+
 Usage:
-    cd /opt/gami && PYTHONPATH=/opt/gami python3 scripts/ingest_all_sessions.py
+    cd /path/to/gami && PYTHONPATH=/path/to/gami python3 scripts/ingest_all_sessions.py
 """
 import glob
 import json
@@ -20,10 +23,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # Add GAMI to path
-sys.path.insert(0, "/opt/gami")
+GAMI_DIR = os.getenv("GAMI_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, GAMI_DIR)
 
 from dotenv import load_dotenv
-load_dotenv("/opt/gami/.env")
+load_dotenv(os.path.join(GAMI_DIR, ".env"))
 
 import sqlalchemy
 from sqlalchemy import create_engine, text
@@ -320,7 +324,7 @@ def main():
     errors = []
 
     # ─── 1. Claude Code JSONL sessions ────────────────────────────────
-    claude_files = sorted(glob.glob(os.path.expanduser("~/.claude/projects/-home-ai/*.jsonl")))
+    claude_files = sorted(glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl")))
     logger.info("=" * 70)
     logger.info("PHASE 1: Claude Code JSONL sessions (%d files)", len(claude_files))
     logger.info("=" * 70)
@@ -328,7 +332,7 @@ def main():
     for i, f in enumerate(claude_files, 1):
         size_mb = os.path.getsize(f) / (1024 * 1024)
         logger.info("[%d/%d] %s (%.1f MB)", i, len(claude_files), os.path.basename(f), size_mb)
-        result = ingest_file(f, "conversation", "claude-opus")
+        result = ingest_file(f, "conversation", "default")
         if result["status"] == "completed":
             stats["completed"] += 1
             stats["total_segments"] += result["segments"]
@@ -345,16 +349,16 @@ def main():
             logger.error("  -> ERROR: %s", result.get("error", "unknown"))
 
     # ─── 2. OpenClaw JSONL sessions ───────────────────────────────────
-    openclaw_files = sorted(glob.glob(os.path.expanduser("~/.openclaw/**/*.jsonl"), recursive=True))
+    agent-a_files = sorted(glob.glob(os.path.expanduser("~/.agent-a/**/*.jsonl"), recursive=True))
     logger.info("")
     logger.info("=" * 70)
-    logger.info("PHASE 2: OpenClaw JSONL sessions (%d files)", len(openclaw_files))
+    logger.info("PHASE 2: OpenClaw JSONL sessions (%d files)", len(agent-a_files))
     logger.info("=" * 70)
 
-    for i, f in enumerate(openclaw_files, 1):
+    for i, f in enumerate(agent-a_files, 1):
         size_mb = os.path.getsize(f) / (1024 * 1024)
-        logger.info("[%d/%d] %s (%.1f MB)", i, len(openclaw_files), os.path.basename(f), size_mb)
-        result = ingest_file(f, "conversation", "openclaw")
+        logger.info("[%d/%d] %s (%.1f MB)", i, len(agent-a_files), os.path.basename(f), size_mb)
+        result = ingest_file(f, "conversation", "agent-a")
         if result["status"] == "completed":
             stats["completed"] += 1
             stats["total_segments"] += result["segments"]
@@ -371,16 +375,16 @@ def main():
             logger.error("  -> ERROR: %s", result.get("error", "unknown"))
 
     # ─── 3. Clawdbot JSONL sessions ──────────────────────────────────
-    clawdbot_files = sorted(glob.glob(os.path.expanduser("~/.clawdbot/**/*.jsonl"), recursive=True))
+    agent-b_files = sorted(glob.glob(os.path.expanduser("~/.agent-b/**/*.jsonl"), recursive=True))
     logger.info("")
     logger.info("=" * 70)
-    logger.info("PHASE 3: Clawdbot JSONL sessions (%d files)", len(clawdbot_files))
+    logger.info("PHASE 3: Clawdbot JSONL sessions (%d files)", len(agent-b_files))
     logger.info("=" * 70)
 
-    for i, f in enumerate(clawdbot_files, 1):
+    for i, f in enumerate(agent-b_files, 1):
         size_mb = os.path.getsize(f) / (1024 * 1024)
-        logger.info("[%d/%d] %s (%.1f MB)", i, len(clawdbot_files), os.path.basename(f), size_mb)
-        result = ingest_file(f, "conversation", "clawdbot")
+        logger.info("[%d/%d] %s (%.1f MB)", i, len(agent-b_files), os.path.basename(f), size_mb)
+        result = ingest_file(f, "conversation", "agent-b")
         if result["status"] == "completed":
             stats["completed"] += 1
             stats["total_segments"] += result["segments"]
@@ -397,16 +401,16 @@ def main():
             logger.error("  -> ERROR: %s", result.get("error", "unknown"))
 
     # ─── 4. OpenClaw SQLite memory ────────────────────────────────────
-    openclaw_sqlite = os.path.expanduser("~/.openclaw/memory/main.sqlite")
+    agent-a_sqlite = os.path.expanduser("~/.agent-a/memory/main.sqlite")
     logger.info("")
     logger.info("=" * 70)
     logger.info("PHASE 4: OpenClaw SQLite memory")
     logger.info("=" * 70)
 
-    if os.path.isfile(openclaw_sqlite):
-        size_mb = os.path.getsize(openclaw_sqlite) / (1024 * 1024)
-        logger.info("File: %s (%.1f MB)", openclaw_sqlite, size_mb)
-        result = ingest_file(openclaw_sqlite, "sqlite_memory", "openclaw", title="OpenClaw Memory DB")
+    if os.path.isfile(agent-a_sqlite):
+        size_mb = os.path.getsize(agent-a_sqlite) / (1024 * 1024)
+        logger.info("File: %s (%.1f MB)", agent-a_sqlite, size_mb)
+        result = ingest_file(agent-a_sqlite, "sqlite_memory", "agent-a", title="OpenClaw Memory DB")
         if result["status"] == "completed":
             stats["completed"] += 1
             stats["total_segments"] += result["segments"]
@@ -422,19 +426,19 @@ def main():
             errors.append(result)
             logger.error("  -> ERROR: %s", result.get("error", "unknown"))
     else:
-        logger.warning("File not found: %s", openclaw_sqlite)
+        logger.warning("File not found: %s", agent-a_sqlite)
 
     # ─── 5. Clawdbot SQLite memory ───────────────────────────────────
-    clawdbot_sqlite = os.path.expanduser("~/.clawdbot/memory/main.sqlite")
+    agent-b_sqlite = os.path.expanduser("~/.agent-b/memory/main.sqlite")
     logger.info("")
     logger.info("=" * 70)
     logger.info("PHASE 5: Clawdbot SQLite memory")
     logger.info("=" * 70)
 
-    if os.path.isfile(clawdbot_sqlite):
-        size_mb = os.path.getsize(clawdbot_sqlite) / (1024 * 1024)
-        logger.info("File: %s (%.1f MB)", clawdbot_sqlite, size_mb)
-        result = ingest_file(clawdbot_sqlite, "sqlite_memory", "clawdbot", title="Clawdbot Memory DB")
+    if os.path.isfile(agent-b_sqlite):
+        size_mb = os.path.getsize(agent-b_sqlite) / (1024 * 1024)
+        logger.info("File: %s (%.1f MB)", agent-b_sqlite, size_mb)
+        result = ingest_file(agent-b_sqlite, "sqlite_memory", "agent-b", title="Clawdbot Memory DB")
         if result["status"] == "completed":
             stats["completed"] += 1
             stats["total_segments"] += result["segments"]
@@ -450,7 +454,7 @@ def main():
             errors.append(result)
             logger.error("  -> ERROR: %s", result.get("error", "unknown"))
     else:
-        logger.warning("File not found: %s", clawdbot_sqlite)
+        logger.warning("File not found: %s", agent-b_sqlite)
 
     # ─── Summary ─────────────────────────────────────────────────────
     elapsed = time.time() - total_start

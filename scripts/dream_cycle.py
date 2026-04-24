@@ -41,8 +41,8 @@ logging.basicConfig(
 log = logging.getLogger("dream")
 
 engine = create_engine(settings.DATABASE_URL_SYNC, pool_size=3)
-ALL_TENANTS = ["clawd", "shared", "openclaw", "clawdbot", "agent-zero"]
-TENANT = "claude-opus"  # Default, rotated each cycle
+ALL_TENANTS = os.getenv("GAMI_TENANTS", "default,shared").split(",")
+TENANT = os.getenv("GAMI_DEFAULT_TENANT", "default")  # Default, rotated each cycle
 STOP_FLAG = False
 
 def signal_handler(sig, frame):

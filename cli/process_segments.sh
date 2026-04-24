@@ -69,22 +69,22 @@ Process up to ${LIMIT} segments.
 
 Steps:
 1. Get unprocessed segments:
-   curl -s "http://localhost:9090/api/v1/segments/unprocessed?limit=10&tenant_id=claude-opus"
+   curl -s "http://localhost:9090/api/v1/segments/unprocessed?limit=10&tenant_id=default"
    If that endpoint does not exist, use this SQL via the helper:
-   cd /opt/gami && PYTHONPATH=/opt/gami python3 -c "
+   cd ${GAMI_DIR:-/opt/gami} && PYTHONPATH=${GAMI_DIR:-/opt/gami} python3 -c "
    from sqlalchemy import create_engine, text
    from api.config import settings
    import json
    engine = create_engine(settings.DATABASE_URL_SYNC)
    with engine.connect() as conn:
-       rows = conn.execute(text(\"SELECT segment_id, left(text, 2000) as text, source_id FROM segments WHERE length(text) BETWEEN 200 AND 3000 AND owner_tenant_id = '\''claude-opus'\'' AND segment_type NOT IN ('\''tool_call'\'', '\''tool_result'\'', '\''chunk'\'') AND NOT EXISTS (SELECT 1 FROM provenance p WHERE p.segment_id = segments.segment_id) ORDER BY created_at DESC LIMIT 10\")).fetchall()
+       rows = conn.execute(text(\"SELECT segment_id, left(text, 2000) as text, source_id FROM segments WHERE length(text) BETWEEN 200 AND 3000 AND owner_tenant_id = '\''default'\'' AND segment_type NOT IN ('\''tool_call'\'', '\''tool_result'\'', '\''chunk'\'') AND NOT EXISTS (SELECT 1 FROM provenance p WHERE p.segment_id = segments.segment_id) ORDER BY created_at DESC LIMIT 10\")).fetchall()
        print(json.dumps([{\"segment_id\": r[0], \"text\": r[1], \"source_id\": r[2]} for r in rows]))
    "
 
 2. For EACH segment, analyze its text and identify entities (people, infrastructure, services, technologies, credentials, concepts).
 
 3. Store each segments entities by running:
-   cd /opt/gami && PYTHONPATH=/opt/gami python3 -c "
+   cd ${GAMI_DIR:-/opt/gami} && PYTHONPATH=${GAMI_DIR:-/opt/gami} python3 -c "
    import hashlib, json
    from sqlalchemy import create_engine, text
    from api.config import settings
@@ -95,7 +95,7 @@ Steps:
    with engine.connect() as conn:
        for e in entities:
            eid = \"ENT_\" + e[\"type\"][:10] + \"_\" + e[\"name\"][:20].replace(\" \",\"_\") + \"_\" + hashlib.md5(e[\"name\"].encode()).hexdigest()[:8]
-           conn.execute(text(\"INSERT INTO entities (entity_id, owner_tenant_id, entity_type, canonical_name, description, status, first_seen_at, last_seen_at, source_count, mention_count) VALUES (:eid, '\''claude-opus'\'', :etype, :name, :desc, '\''active'\'', NOW(), NOW(), 1, 1) ON CONFLICT (entity_id) DO UPDATE SET mention_count = entities.mention_count + 1, last_seen_at = NOW()\"), {\"eid\": eid, \"etype\": e[\"type\"], \"name\": e[\"name\"], \"desc\": e.get(\"description\",\"\")})
+           conn.execute(text(\"INSERT INTO entities (entity_id, owner_tenant_id, entity_type, canonical_name, description, status, first_seen_at, last_seen_at, source_count, mention_count) VALUES (:eid, '\''default'\'', :etype, :name, :desc, '\''active'\'', NOW(), NOW(), 1, 1) ON CONFLICT (entity_id) DO UPDATE SET mention_count = entities.mention_count + 1, last_seen_at = NOW()\"), {\"eid\": eid, \"etype\": e[\"type\"], \"name\": e[\"name\"], \"desc\": e.get(\"description\",\"\")})
            conn.execute(text(\"INSERT INTO provenance (provenance_id, target_type, target_id, source_id, segment_id, extraction_method, extractor_version, confidence) VALUES (:pid, '\''entity'\'', :eid, :src, :seg, '\''agent_haiku'\'', '\''v1'\'', 0.85) ON CONFLICT DO NOTHING\"), {\"pid\": \"PROV_\" + eid[:20] + \"_\" + segment_id[:20], \"eid\": eid, \"src\": source_id, \"seg\": segment_id})
        conn.commit()
        print(f\"Stored {len(entities)} entities for {segment_id}\")

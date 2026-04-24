@@ -1,7 +1,7 @@
 """Universal embedding via sentence-transformers.
 
 Identical results on CPU and GPU. No Ollama dependency.
-Use gami-embed conda env: /home/ai/.conda/envs/gami-embed/bin/python
+Use gami-embed conda env: python3
 
 For use inside GAMI API (which runs on system python), this module
 shells out to the gami-embed env. For batch scripts, import directly.
@@ -16,7 +16,7 @@ logger = logging.getLogger("gami.embed")
 # Path to the gami-embed python
 EMBED_PYTHON = None
 for p in [
-    "/home/ai/.conda/envs/gami-embed/bin/python",
+    "python3",
     os.path.expanduser("~/.conda/envs/gami-embed/bin/python"),
 ]:
     if os.path.exists(p):

@@ -23,8 +23,8 @@ log = logging.getLogger("ingest_v2")
 
 DB_URL = os.getenv("DATABASE_URL", "postgresql://gami:gami@localhost:5432/gami")
 engine = create_engine(DB_URL, pool_size=3)
-TENANT = "books"
-BOOK_DIR = "/mnt/16tb/books/"
+TENANT = os.getenv("GAMI_BOOK_TENANT", "books")
+BOOK_DIR = os.getenv("GAMI_BOOK_DIR", "/path/to/your/books/")
 
 
 def get_remaining_books():

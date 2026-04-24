@@ -42,7 +42,7 @@ router = APIRouter()
 
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000)
-    tenant_id: str = Field(default="claude-opus")
+    tenant_id: str = Field(default="default")
     tenant_ids: Optional[list[str]] = Field(default=None, description="Search multiple tenants")
     limit: int = Field(default=20, ge=1, le=100)
     vector_weight: float = Field(default=0.7, ge=0.0, le=1.0)
@@ -78,7 +78,7 @@ class SearchResponse(BaseModel):
 
 class RecallRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000)
-    tenant_id: str = Field(default="claude-opus")
+    tenant_id: str = Field(default="default")
     tenant_ids: Optional[list[str]] = Field(default=None)
     max_tokens: int = Field(default=4000, ge=100, le=16000)
     mode: Optional[str] = Field(default=None, description="Override query mode")
@@ -107,7 +107,7 @@ class RecallResponse(BaseModel):
 
 class VerifyRequest(BaseModel):
     claim: str = Field(..., min_length=1, max_length=2000)
-    tenant_id: str = Field(default="claude-opus")
+    tenant_id: str = Field(default="default")
     tenant_ids: Optional[list[str]] = Field(default=None)
     max_evidence: int = Field(default=10, ge=1, le=50)
 
@@ -135,7 +135,7 @@ class CiteRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 class RememberRequest(BaseModel):
-    tenant_id: str = Field(default="claude-opus")
+    tenant_id: str = Field(default="default")
     text: str = Field(..., min_length=1, max_length=5000)
     memory_type: str = Field(default="fact")
     subject: str = Field(default="general")
@@ -456,7 +456,7 @@ async def confirm_endpoint(req: ConfirmRequest):
 
 
 @router.get("/context/{session_id}")
-async def get_session_context(session_id: str, tenant_id: str = "claude-opus"):
+async def get_session_context(session_id: str, tenant_id: str = "default"):
     """Get active session working memory: recently retrieved memories + relevant active ones."""
     try:
         result = await get_context(

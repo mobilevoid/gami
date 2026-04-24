@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bulk ingest all known data sources on hal9001 into GAMI.
+"""Bulk ingest all known data sources into GAMI.
 
 Walks through all data source paths from the implementation plan and
 ingests them with appropriate source types and tenant assignments.
@@ -36,7 +36,7 @@ DATA_SOURCES = [
             os.path.expanduser("~/.claude/projects/*/conversations/*.jsonl"),
         ],
         "source_type": "conversation",
-        "tenant_id": "claude-opus",
+        "tenant_id": "default",
     },
     # 2. Claude memory / project files
     {
@@ -46,49 +46,49 @@ DATA_SOURCES = [
             os.path.expanduser("~/.claude/projects/*/CLAUDE.md"),
         ],
         "source_type": "markdown",
-        "tenant_id": "claude-opus",
+        "tenant_id": "default",
     },
     # 3. OpenClaw SQLite memories
     {
         "name": "OpenClaw SQLite memories",
         "paths": [
-            os.path.expanduser("~/openclaw/memory/*.sqlite"),
-            os.path.expanduser("~/openclaw/memory/*.db"),
-            os.path.expanduser("~/openclaw/.memory/*.sqlite"),
+            os.path.expanduser("~/agent-a/memory/*.sqlite"),
+            os.path.expanduser("~/agent-a/memory/*.db"),
+            os.path.expanduser("~/agent-a/.memory/*.sqlite"),
         ],
         "source_type": "sqlite_memory",
-        "tenant_id": "openclaw",
+        "tenant_id": "agent-a",
     },
     # 4. OpenClaw sessions
     {
         "name": "OpenClaw conversation sessions",
         "paths": [
-            os.path.expanduser("~/openclaw/sessions/*.jsonl"),
-            os.path.expanduser("~/openclaw/conversations/*.jsonl"),
+            os.path.expanduser("~/agent-a/sessions/*.jsonl"),
+            os.path.expanduser("~/agent-a/conversations/*.jsonl"),
         ],
         "source_type": "conversation",
-        "tenant_id": "openclaw",
+        "tenant_id": "agent-a",
     },
     # 5. Clawdbot SQLite memories
     {
         "name": "Clawdbot SQLite memories",
         "paths": [
-            os.path.expanduser("~/clawdbot/memory/*.sqlite"),
-            os.path.expanduser("~/clawdbot/memory/*.db"),
-            os.path.expanduser("~/clawdbot/.memory/*.sqlite"),
+            os.path.expanduser("~/agent-b/memory/*.sqlite"),
+            os.path.expanduser("~/agent-b/memory/*.db"),
+            os.path.expanduser("~/agent-b/.memory/*.sqlite"),
         ],
         "source_type": "sqlite_memory",
-        "tenant_id": "clawdbot",
+        "tenant_id": "agent-b",
     },
     # 6. Clawdbot sessions
     {
         "name": "Clawdbot conversation sessions",
         "paths": [
-            os.path.expanduser("~/clawdbot/sessions/*.jsonl"),
-            os.path.expanduser("~/clawdbot/conversations/*.jsonl"),
+            os.path.expanduser("~/agent-b/sessions/*.jsonl"),
+            os.path.expanduser("~/agent-b/conversations/*.jsonl"),
         ],
         "source_type": "conversation",
-        "tenant_id": "clawdbot",
+        "tenant_id": "agent-b",
     },
     # 7. Clawd memory + knowledge
     {

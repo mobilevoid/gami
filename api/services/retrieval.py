@@ -250,7 +250,7 @@ def _compute_evidence_score(
 
 async def recall(
     query: str,
-    tenant_id: str = "claude-opus",
+    tenant_id: str = "default",
     tenant_ids: Optional[list[str]] = None,
     max_tokens: int = 4000,
     mode: Optional[str] = None,
@@ -601,7 +601,7 @@ async def recall(
                             "canonical_name": row.canonical_name,
                             "source_type": "graph_expansion",
                             "relation_type": row.relation_type,
-                            "knowledge_tier": _tenant_tiers.get("claude-opus", "operational"),
+                            "knowledge_tier": _tenant_tiers.get("default", "operational"),
                         },
                     ))
             except Exception as exc:
@@ -970,7 +970,7 @@ async def recall(
 
 async def verify_claim(
     claim_text: str,
-    tenant_id: str = "claude-opus",
+    tenant_id: str = "default",
     tenant_ids: Optional[list[str]] = None,
     max_evidence: int = 10,
 ) -> VerifyResult:

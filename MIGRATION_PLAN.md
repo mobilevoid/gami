@@ -392,7 +392,7 @@ dream_consolidate(max_clusters=20)  # Create clusters
 cd /opt/gami
 PYTHONPATH=/opt/gami python -c "
 from workers.embedder_worker import embed_segments
-embed_segments(tenant_id='claude-opus', batch_size=100)
+embed_segments(tenant_id='default', batch_size=100)
 "
 
 # Monitor progress:

@@ -2,7 +2,7 @@
 """Bulk ingest files into a GAMI tenant.
 
 Usage:
-    python bulk_ingest.py --path /mnt/16tb/books/ --tenant books --type pdf
+    python bulk_ingest.py --path /path/to/books/ --tenant books --type pdf
     python bulk_ingest.py --path /path/to/docs/ --tenant whitepapers --type markdown
     python bulk_ingest.py --path /path/to/manuals/ --tenant manuals --type pdf --workers 4
 

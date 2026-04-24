@@ -127,7 +127,7 @@ def main():
     args = parser.parse_args()
 
     if args.tenant == "all":
-        tenant_ids = ["books", "dene-websites", "claude-opus", "shared"]
+        tenant_ids = os.getenv("GAMI_TENANTS", "default,shared").split(",")
     else:
         tenant_ids = [args.tenant]
 

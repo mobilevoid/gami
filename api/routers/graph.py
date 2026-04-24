@@ -29,7 +29,7 @@ router = APIRouter()
 class ExploreRequest(BaseModel):
     entity_id: Optional[str] = Field(default=None, description="Entity ID to explore")
     entity_name: Optional[str] = Field(default=None, description="Entity name to look up")
-    tenant_id: str = Field(default="claude-opus")
+    tenant_id: str = Field(default="default")
     depth: int = Field(default=2, ge=1, le=3)
     limit: int = Field(default=20, ge=1, le=100)
 

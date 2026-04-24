@@ -85,9 +85,11 @@ def gen_id(prefix, name):
     return f"{prefix}_{clean}_{h}"
 
 
-def enrich_top_entities(limit=50):
+def enrich_top_entities(limit=50, tenant_ids=None):
     """Upgrade descriptions for top entities by gathering their segment contexts."""
-    log.info(f"Enriching top {limit} entities...")
+    if tenant_ids is None:
+        tenant_ids = os.getenv("GAMI_TENANTS", "default,shared").split(",")
+    log.info(f"Enriching top {limit} entities for tenants: {tenant_ids}")
 
     with engine.connect() as conn:
         # Get top entities by mention count that have short descriptions
@@ -96,11 +98,11 @@ def enrich_top_entities(limit=50):
                    e.description, e.mention_count, e.owner_tenant_id
             FROM entities e
             WHERE e.status = 'active'
-            AND e.owner_tenant_id = 'claude-opus'
+            AND e.owner_tenant_id = ANY(:tids)
             AND (e.description IS NULL OR length(e.description) < 60)
             ORDER BY e.mention_count DESC
             LIMIT :lim
-        """), {"lim": limit}).fetchall()
+        """), {"lim": limit, "tids": tenant_ids}).fetchall()
 
         log.info(f"  Found {len(entities)} entities with short descriptions")
         upgraded = 0
@@ -163,7 +165,7 @@ def extract_rich_claims(limit=100):
             SELECT s.segment_id, s.text, s.source_id, count(p.provenance_id) as ent_count
             FROM segments s
             JOIN provenance p ON p.segment_id = s.segment_id AND p.target_type = 'entity'
-            WHERE s.owner_tenant_id = 'claude-opus'
+            WHERE s.owner_tenant_id = 'default'
             AND length(s.text) BETWEEN 200 AND 2000
             AND s.segment_type NOT IN ('tool_call', 'tool_result')
             GROUP BY s.segment_id, s.text, s.source_id
@@ -203,7 +205,7 @@ Return a JSON array of strings, each a specific factual claim:
                 conn.execute(text("""
                     INSERT INTO claims (claim_id, owner_tenant_id, predicate, summary_text,
                         confidence, modality, status)
-                    VALUES (:cid, 'claude-opus', 'operational_fact', :txt, 0.8, 'extracted', 'active')
+                    VALUES (:cid, 'default', 'operational_fact', :txt, 0.8, 'extracted', 'active')
                     ON CONFLICT (claim_id) DO NOTHING
                 """), {"cid": cid, "txt": claim_text[:500]})
 
