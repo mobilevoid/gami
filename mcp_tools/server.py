@@ -35,6 +35,85 @@ from mcp_tools.tool_definitions import TOOL_DEFINITIONS
 logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL))
 logger = logging.getLogger("gami.mcp")
 
+
+# ---------------------------------------------------------------------------
+# Real-time manifold coordinate computation
+# ---------------------------------------------------------------------------
+
+async def compute_manifold_coords(
+    target_id: str,
+    target_type: str,
+    embedding: list,
+    db_session=None,
+) -> bool:
+    """Compute and store product manifold coordinates for a new item.
+
+    Called in real-time when memories/segments are created to ensure
+    manifold search works immediately without waiting for dream cycle.
+
+    Args:
+        target_id: The ID of the item (memory_id, segment_id, etc.)
+        target_type: Type of item ('memory', 'segment', 'entity')
+        embedding: The 768d embedding as a list
+        db_session: Optional existing database session
+
+    Returns:
+        True if coordinates were computed successfully
+    """
+    try:
+        import numpy as np
+        import torch
+        from api.llm.manifold_embeddings import get_manifold_encoder
+
+        # Get encoder (uses CPU for real-time, GPU for batch)
+        encoder = get_manifold_encoder()
+
+        # Convert embedding to tensor
+        emb_array = np.array(embedding, dtype=np.float32).reshape(1, -1)
+        emb_tensor = torch.tensor(emb_array, dtype=torch.float32)
+
+        # Compute manifold coordinates
+        with torch.no_grad():
+            coords = encoder.encode_batch_from_embeddings(emb_tensor)[0]
+
+        # Format for database
+        h_list = coords.hyperbolic.tolist()
+        s_list = coords.spherical.tolist()
+        e_vec = "[" + ",".join(str(v) for v in coords.euclidean) + "]"
+
+        # Store in database
+        from sqlalchemy import text as sql_text
+
+        insert_sql = sql_text("""
+            INSERT INTO product_manifold_coords
+                (target_id, target_type, hyperbolic_coords, spherical_coords, euclidean_coords)
+            VALUES (:tid, :ttype, :h, :s, CAST(:e AS vector))
+            ON CONFLICT (target_id, target_type) DO UPDATE SET
+                hyperbolic_coords = EXCLUDED.hyperbolic_coords,
+                spherical_coords = EXCLUDED.spherical_coords,
+                euclidean_coords = EXCLUDED.euclidean_coords,
+                computed_at = NOW()
+        """)
+
+        params = {"tid": target_id, "ttype": target_type, "h": h_list, "s": s_list, "e": e_vec}
+
+        if db_session:
+            await db_session.execute(insert_sql, params)
+            await db_session.commit()
+        else:
+            from api.services.db import AsyncSessionLocal
+            async with AsyncSessionLocal() as db:
+                await db.execute(insert_sql, params)
+                await db.commit()
+
+        logger.debug(f"Computed manifold coords for {target_type}:{target_id}")
+        return True
+
+    except Exception as e:
+        logger.warning(f"Failed to compute manifold coords for {target_id}: {e}")
+        return False
+
+
 # Create MCP server
 server = Server("gami-memory")
 
@@ -303,6 +382,9 @@ async def _memory_remember(args: dict) -> dict:
         )
         await db.commit()
 
+        # Compute manifold coordinates in real-time for immediate search
+        await compute_manifold_coords(memory_id, "memory", embedding)
+
     return {
         "memory_id": memory_id,
         "status": "stored",
@@ -404,6 +486,9 @@ async def _memory_update(args: dict) -> dict:
         )
 
         await db.commit()
+
+        # Compute manifold coordinates for new version
+        await compute_manifold_coords(new_id, "memory", embedding)
 
     return {
         "status": "updated",

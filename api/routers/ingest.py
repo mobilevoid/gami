@@ -27,6 +27,110 @@ from api.services.segment_service import get_segment, get_segments, store_segmen
 
 logger = logging.getLogger("gami.routers.ingest")
 
+
+async def post_ingest_embed_and_manifold(
+    db: AsyncSession,
+    segment_ids: list[str],
+    batch_size: int = 50,
+) -> dict:
+    """Post-ingest hook: embed segments and compute manifold coordinates.
+
+    This enables immediate searchability via product manifold search
+    without waiting for the dream cycle.
+
+    Args:
+        db: Database session
+        segment_ids: List of newly created segment IDs
+        batch_size: Number of segments to process at once
+
+    Returns:
+        Dict with counts of embedded and manifold-computed segments
+    """
+    if not segment_ids:
+        return {"embedded": 0, "manifold_computed": 0}
+
+    try:
+        import numpy as np
+        import torch
+        from api.llm.embeddings import embed_text
+        from api.llm.manifold_embeddings import get_manifold_encoder
+
+        embedded = 0
+        manifold_computed = 0
+        encoder = get_manifold_encoder()
+
+        # Process in batches
+        for i in range(0, len(segment_ids), batch_size):
+            batch_ids = segment_ids[i:i + batch_size]
+
+            # Fetch segment texts
+            result = await db.execute(
+                text("""
+                    SELECT segment_id, text
+                    FROM segments
+                    WHERE segment_id = ANY(:ids)
+                    AND embedding IS NULL
+                """),
+                {"ids": batch_ids},
+            )
+            rows = result.fetchall()
+
+            for row in rows:
+                seg_id, seg_text = row.segment_id, row.text
+                if not seg_text or len(seg_text.strip()) < 10:
+                    continue
+
+                try:
+                    # Generate 768d embedding
+                    embedding = await embed_text(seg_text[:8000])  # Truncate long texts
+                    vec_str = "[" + ",".join(str(v) for v in embedding) + "]"
+
+                    # Update segment with embedding
+                    await db.execute(
+                        text("UPDATE segments SET embedding = CAST(:v AS vector) WHERE segment_id = :sid"),
+                        {"v": vec_str, "sid": seg_id},
+                    )
+                    embedded += 1
+
+                    # Compute manifold coordinates
+                    emb_array = np.array(embedding, dtype=np.float32).reshape(1, -1)
+                    emb_tensor = torch.tensor(emb_array, dtype=torch.float32)
+
+                    with torch.no_grad():
+                        coords = encoder.encode_batch_from_embeddings(emb_tensor)[0]
+
+                    h_list = coords.hyperbolic.tolist()
+                    s_list = coords.spherical.tolist()
+                    e_vec = "[" + ",".join(str(v) for v in coords.euclidean) + "]"
+
+                    await db.execute(
+                        text("""
+                            INSERT INTO product_manifold_coords
+                                (target_id, target_type, hyperbolic_coords, spherical_coords, euclidean_coords)
+                            VALUES (:tid, 'segment', :h, :s, CAST(:e AS vector))
+                            ON CONFLICT (target_id, target_type) DO UPDATE SET
+                                hyperbolic_coords = EXCLUDED.hyperbolic_coords,
+                                spherical_coords = EXCLUDED.spherical_coords,
+                                euclidean_coords = EXCLUDED.euclidean_coords,
+                                computed_at = NOW()
+                        """),
+                        {"tid": seg_id, "h": h_list, "s": s_list, "e": e_vec},
+                    )
+                    manifold_computed += 1
+
+                except Exception as e:
+                    logger.warning(f"Failed to embed/manifold segment {seg_id}: {e}")
+                    continue
+
+            await db.commit()
+
+        logger.info(f"Post-ingest: embedded {embedded}, manifold {manifold_computed} segments")
+        return {"embedded": embedded, "manifold_computed": manifold_computed}
+
+    except Exception as e:
+        logger.error(f"Post-ingest hook failed: {e}")
+        return {"embedded": 0, "manifold_computed": 0, "error": str(e)}
+
 router = APIRouter()
 
 
@@ -126,6 +230,9 @@ async def ingest_source(
 
         await update_parse_status(db, source_id, "parsed", parser_version="1.0.0")
 
+        # Post-ingest hook: embed segments and compute manifold coords for immediate search
+        embed_result = await post_ingest_embed_and_manifold(db, segment_ids)
+
         # Create job record
         job_id = f"JOB_INGEST_{uuid.uuid4().hex[:8]}"
         now = datetime.now(timezone.utc)
@@ -161,6 +268,8 @@ async def ingest_source(
             "source_id": source_id,
             "job_id": job_id,
             "segments_created": len(segment_ids),
+            "segments_embedded": embed_result.get("embedded", 0),
+            "manifold_computed": embed_result.get("manifold_computed", 0),
             "file_size_bytes": reg_result.get("file_size_bytes"),
             "checksum": reg_result.get("checksum"),
         }

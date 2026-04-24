@@ -244,6 +244,49 @@ gami/
 └── tests/               # Test suite
 ```
 
+## Scripts
+
+### Data Ingestion
+
+```bash
+# Ingest files into a tenant
+python scripts/ingest_tenant.py --tenant my-project --directory ./docs/
+
+# Ingest with specific file types
+python scripts/ingest_tenant.py --tenant my-project --directory ./docs/ --extensions .md,.txt,.pdf
+
+# Create tenant and ingest
+python scripts/ingest_tenant.py --tenant new-project --create-tenant --file ./README.md
+
+# Dry run (show what would be ingested)
+python scripts/ingest_tenant.py --tenant my-project --directory ./docs/ --dry-run
+```
+
+### Manifold Coordinate Population
+
+For GPU-accelerated manifold coordinate generation:
+
+```bash
+# Requires GAMI_DATABASE_URL environment variable
+export GAMI_DATABASE_URL="postgresql://user:pass@localhost:5432/gami"
+
+# Populate all segments and entities
+conda run -n gami-embed python scripts/populate_product_manifold.py --batch-size 1024 --type all
+
+# Populate only segments
+python scripts/populate_product_manifold.py --type segment --limit 10000
+```
+
+### Dream Cycle
+
+```bash
+# Run dream cycle for 24 hours
+python scripts/dream_cycle.py --duration 24
+
+# Run specific phase
+python scripts/dream_cycle.py --phase product_manifold_coords --duration 1
+```
+
 ## Configuration Reference
 
 See `.env.example` for all available configuration options.

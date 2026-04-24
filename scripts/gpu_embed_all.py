@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s",
 log = logging.getLogger("gpu_embed")
 
 # Database connection
-DB_URL = "postgresql://gami:GamiProd2026@localhost:5433/gami"
+DB_URL = "postgresql://gami:PASSWORD@localhost:5433/gami"
 engine = create_engine(DB_URL)
 
 # Load model on GPU

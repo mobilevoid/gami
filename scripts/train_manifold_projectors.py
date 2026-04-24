@@ -42,7 +42,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger(__name__)
 
 # Database connection
-DB_URL = os.getenv("GAMI_DATABASE_URL", "postgresql://gami:GamiProd2026@127.0.0.1:5433/gami")
+DB_URL = os.getenv("GAMI_DATABASE_URL", "postgresql://gami:PASSWORD@127.0.0.1:5433/gami")
 engine = create_engine(DB_URL)
 
 
