@@ -131,10 +131,92 @@ Each dimension is **independently queryable**. This enables queries that are imp
 
 **The key insight**: A 768-dimensional vector is still just ONE dimension of information — semantic similarity. GAMI embeddings carry **6+ orthogonal dimensions** that can be combined, filtered, and weighted independently.
 
-This is why we call it "multi-manifold" — each manifold isn't just a separate index, it's a separate **geometric space** where distance means something different:
-- In the **Claims** manifold, distance considers predicate type (passwords cluster with passwords)
-- In the **Causal** manifold, distance respects directionality (cause→effect, not just "related")
-- In the **Temporal** manifold, distance is literal time difference
+### Why "Manifold" and Not Just "Multiple Embeddings"?
+
+Fair question. Multiple embeddings would be:
+```
+text → semantic_embedding (768-dim, cosine similarity)
+text → another_embedding (768-dim, cosine similarity)
++ metadata columns with WHERE clause filters
+```
+Still flat spaces. Still just cosine similarity. Filters are boolean, not geometric.
+
+A **manifold** has non-trivial topology — the structure of the space itself encodes relationships. Here's what makes GAMI's spaces actual manifolds:
+
+**1. Graph Topology (Entity & Relation Manifolds)**
+```
+Distance ≠ cosine similarity
+Distance = shortest path through relationship graph
+
+    [PostgreSQL]
+        │ runs_on
+        ▼
+    [db-server-1] ◄──manages── [John]
+        │ hosts
+        ▼
+    [user_table]
+```
+"PostgreSQL" and "user_table" are 2 hops apart in the graph, regardless of their embedding similarity. Graph traversal finds connections that vector similarity misses entirely.
+
+**2. Directed Geometry (Causal Manifold)**
+```
+Standard embedding: "outage" ~ "misconfigured firewall" (symmetric)
+Causal manifold:    "misconfigured firewall" → "outage" (directed edge)
+                    
+                    distance(cause, effect) ≠ distance(effect, cause)
+```
+The manifold is **asymmetric**. This isn't achievable with cosine similarity, which is always symmetric.
+
+**3. Hierarchical Curvature (Cluster Manifold)**
+```
+Level 0: Individual memories (leaves)
+Level 1: Clustered abstractions
+Level 2: Higher-order patterns
+         
+         [Infrastructure Patterns]        ← Level 2
+              /              \
+    [Database Config]    [Deploy Procedures]   ← Level 1
+      /    |    \           /    |    \
+   [m1]  [m2]  [m3]      [m4]  [m5]  [m6]      ← Level 0
+```
+Distance depends on tree level. Two memories in the same cluster are "closer" than two memories with similar embeddings in different clusters. The geometry changes as you move up the hierarchy.
+
+**4. Type Submanifolds (Entity Manifold)**
+```
+Entity types form disconnected subspaces:
+
+  PERSON submanifold        SERVICE submanifold
+  ┌─────────────────┐      ┌─────────────────┐
+  │ •John  •Alice   │      │ •nginx  •redis  │
+  │    •Bob         │      │     •postgres   │
+  └─────────────────┘      └─────────────────┘
+  
+Cross-type similarity is penalized. "John" is never "close" to "nginx"
+even if they co-occur frequently.
+```
+
+**5. Dynamic Geometry (Consolidation)**
+
+The dream cycle physically changes the manifold structure:
+- Similar memories merge → points collapse together
+- Contradictions detected → edges get negative weights  
+- Trust scores update → distances rescale based on source reliability
+
+This is fundamentally different from static embeddings. The geometry evolves.
+
+---
+
+### What This Enables
+
+| Capability | Multiple Embeddings | GAMI Manifolds |
+|------------|---------------------|----------------|
+| "What's connected to X?" | Re-embed query, hope for overlap | Graph traversal, guaranteed connections |
+| "What caused Y?" | Symmetric similarity | Directed edge traversal |
+| "Summarize this topic" | Retrieve similar chunks | Traverse to cluster abstraction |
+| "Is this contradicted?" | Cannot express | Check contradiction edges |
+| "How reliable is this?" | Metadata filter | Trust-weighted distance |
+
+The manifold structure means the **space itself encodes knowledge** — relationships, hierarchy, directionality, type constraints — not just similarity scores with filters bolted on.
 
 ---
 
