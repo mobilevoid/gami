@@ -1,39 +1,58 @@
 # GAMI - Graph-Augmented Memory Interface
 
-> **Version 2.0** | Multi-tenant embedded document database with hybrid search, MCP server, and dream-mode knowledge synthesis.
+> **Give your AI a mind that never forgets.**
 
-## Overview
+GAMI is long-term memory for AI agents. While other systems treat memory as flat vector search, GAMI understands that knowledge has *shape* — hierarchies, categories, and relationships that flat embeddings destroy.
 
-GAMI is a persistent AI memory system designed for use with AI assistants like Claude Code. It provides:
+## Why GAMI?
 
-- **Product Manifold Search**: True geometric embeddings using H^32 × S^16 × E^64 (hyperbolic + spherical + Euclidean)
-- **Hybrid Search**: Vector + lexical search with cross-encoder reranking
-- **Multi-Index Retrieval**: Query routing to optimal indexes (entities, claims, procedures, relations)
-- **Dream Cycle**: Background knowledge synthesis (17 phases) for entity extraction, consolidation, and workflow learning
-- **MCP Integration**: 27 tools for AI agent memory access
-- **Multi-Tenant**: Isolated knowledge bases per tenant
-- **Multi-Backend LLM**: Support for vLLM, Ollama, OpenAI, and Anthropic APIs
+**The Problem:** AI assistants forget everything between sessions. RAG systems retrieve documents but don't *understand* them. Vector databases lose hierarchical structure — "PostgreSQL" and "database" end up equidistant from "MySQL" even though one contains the other.
 
-## Product Manifold Embeddings
+**The Solution:** GAMI embeds knowledge into a *product manifold* — a geometric space where:
+- **Hierarchies curve naturally** (Poincaré hyperbolic space)
+- **Categories cluster on spheres** (like topics on a globe)
+- **Semantics stay searchable** (Euclidean for fast pgvector queries)
 
-GAMI uses TRUE manifold embeddings in a product space H^32 × S^16 × E^64:
+Then it *dreams* — a 17-phase background cycle that extracts entities, resolves aliases, learns workflows, and consolidates memories while your agent sleeps.
 
-| Component | Dimensions | Geometry | Purpose |
-|-----------|------------|----------|---------|
-| Hyperbolic | 32 | Poincaré ball | Hierarchy - parents closer to origin than children |
-| Spherical | 16 | Unit sphere | Categories - same-type items cluster together |
-| Euclidean | 64 | Flat space | Semantics - pgvector-compatible similarity |
+## Features
 
-**Why this matters:**
-- Hyperbolic space naturally represents hierarchies (a tree with 1000 leaves embeds in 2D without distortion)
-- Spherical space clusters categorical information (entity types, claim modalities)
-- Euclidean space preserves semantic similarity and enables fast pgvector ANN search
+| Feature | What It Does |
+|---------|--------------|
+| **Product Manifold H³² × S¹⁶ × E⁶⁴** | Embeds knowledge in curved space that preserves hierarchy and category structure |
+| **Dream Cycle** | 17 background phases: extract, consolidate, learn workflows, compress, verify |
+| **Hybrid Search** | Vector + lexical + cross-encoder reranking for 25-40% better precision |
+| **Multi-Index Routing** | Queries automatically route to entities, claims, procedures, or relations |
+| **Universal Integration** | MCP server (27 tools), REST API, or direct Python — works with any agent framework |
+| **Real-Time Manifold** | New memories get manifold coordinates immediately — no waiting for batch |
+| **Multi-Tenant** | Isolated knowledge bases with tenant-level access control |
+| **LLM Agnostic** | Works with vLLM, Ollama, OpenAI, Anthropic, or any OpenAI-compatible API |
+
+## How Product Manifolds Work
+
+Flat vector spaces can't represent "PostgreSQL is a type of database" without losing precision. GAMI solves this with a **product manifold** — three geometric spaces working together:
+
+```
+H³² (Poincaré Ball)     S¹⁶ (Sphere)           E⁶⁴ (Euclidean)
+     ┌─────┐              ┌─────┐               ┌─────┐
+     │  ·  │ ← origin     │     │               │     │
+     │ / \ │              │  ·  │ ← cluster     │ · · │ ← similar
+     │·   ·│ ← children   │ · · │   together    │· · ·│   items
+     └─────┘              └─────┘               └─────┘
+    Hierarchies          Categories            Semantics
+```
+
+| Space | Dimensions | Geometry | Captures |
+|-------|------------|----------|----------|
+| **Hyperbolic** | 32 | Poincaré ball | Parent-child relationships — "database" closer to origin than "PostgreSQL" |
+| **Spherical** | 16 | Unit sphere | Type clusters — all "person" entities cluster together |
+| **Euclidean** | 64 | Flat space | Semantic similarity — enables fast pgvector ANN queries |
 
 **Two-stage retrieval:**
-1. Fast pre-filter using pgvector on 64d Euclidean component
-2. Precise reranking using full manifold geodesic distance
+1. **Fast pre-filter** — pgvector on 64d Euclidean component (milliseconds)
+2. **Precise rerank** — full manifold geodesic distance on top candidates
 
-The system automatically falls back to standard vector search when manifold coordinates aren't populated.
+Falls back to standard vector search when manifold coordinates aren't yet populated.
 
 ## Quick Start
 
