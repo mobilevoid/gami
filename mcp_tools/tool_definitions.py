@@ -597,9 +597,10 @@ TOOL_DEFINITIONS = {
     "memory_suggest_procedure": {
         "name": "memory_suggest_procedure",
         "description": (
-            "Suggest relevant learned procedures based on the current task or query. "
-            "Returns matching procedures with their steps and parameters. "
-            "Use when the user is attempting a task that might match a known procedure."
+            "Suggest relevant workflow patterns for a task. Searches workflow memories "
+            "(extracted from past sessions) and returns matching patterns. Workflow memories "
+            "consolidate naturally over time via the dream cycle. Use when the user is "
+            "attempting a task that might match a known workflow pattern."
         ),
         "inputSchema": {
             "type": "object",
@@ -619,14 +620,14 @@ TOOL_DEFINITIONS = {
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum procedures to return",
-                    "default": 3,
+                    "description": "Maximum workflows to return",
+                    "default": 5,
                     "minimum": 1,
                     "maximum": 10,
                 },
                 "min_confidence": {
                     "type": "number",
-                    "description": "Minimum procedure confidence",
+                    "description": "Minimum workflow confidence/importance",
                     "default": 0.4,
                     "minimum": 0.0,
                     "maximum": 1.0,

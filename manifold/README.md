@@ -1,21 +1,30 @@
 # Multi-Manifold Memory System
 
-> **Version 0.1.0** | **Status:** Production Ready
+> **Version 2.0** | **Status:** Production Ready
 >
-> A polyglot RAG system using 6 specialized manifolds with query-conditioned weighting.
+> A polyglot RAG system using 8 specialized indexes with query routing, cross-encoder reranking, and contradiction awareness.
 
 ## Overview
 
-Replaces single-embedding RAG with **6 specialized manifolds** that activate based on query intent:
+Replaces single-embedding RAG with **8 specialized indexes** that activate based on query routing:
 
-| Manifold | Dimension | Purpose | Implementation |
-|----------|-----------|---------|----------------|
-| Topic | 768d dense | General similarity | `embedding.py` |
-| Claim | 768d SPO | Fact extraction (subject-predicate-object) | `canonical/claim_normalizer.py` |
-| Procedure | 768d steps | Ordered sequences | `canonical/procedure_normalizer.py` |
-| Relation | Graph-derived | Structure similarity via Apache AGE | `scoring/relation.py` |
-| Time | 12 features | Temporal relevance (ingest + content dates) | `temporal/feature_extractor.py` |
-| Evidence | 5 scores | Verification confidence | `scoring/evidence.py` |
+| Index | Dimension | Purpose | Implementation |
+|-------|-----------|---------|----------------|
+| Segments | 768d dense | General text chunks | `retrieval/anchor_retrieval.py` |
+| Entities | 768d | Named entities with descriptions | `retrieval/multi_index_retriever.py` |
+| Claims | 768d SPO | Factual claims (subject-predicate-object) | `retrieval/multi_index_retriever.py` |
+| Relations | Graph-derived | Entity relationships | `retrieval/multi_index_retriever.py` |
+| Procedures | 768d | Workflow memories (consolidated) | `retrieval/multi_index_retriever.py` |
+| Memories | 768d | Assistant memories | `retrieval/multi_index_retriever.py` |
+| Clusters | 768d | Memory cluster abstractions | `retrieval/multi_index_retriever.py` |
+| Causal | 768d | Cause-effect relationships | `retrieval/multi_index_retriever.py` |
+
+### Enhancements (v2.0)
+- **Cross-encoder reranking**: 25-40% precision improvement via `ms-marco-MiniLM-L-6-v2`
+- **Query routing**: Pattern-based routing to optimal indexes
+- **Contradiction detection**: Surfaces conflicting information in results
+- **Bi-temporal filtering**: Query by event time vs ingestion time
+- **Workflow memories**: Extracted patterns that consolidate naturally
 
 ## Features
 
@@ -98,8 +107,11 @@ MANIFOLD_SHADOW_MODE=true
 ### Core Retrieval
 - `retrieval/orchestrator.py` - Main coordinator with parallel manifold search
 - `retrieval/query_classifier_v2.py` - Mode detection + weight selection
+- `retrieval/query_routing.py` - Pattern-based query routing to indexes
+- `retrieval/multi_index_retriever.py` - Multi-index search with fusion
+- `retrieval/anchor_retrieval.py` - Primary segment retrieval
 - `retrieval/manifold_fusion.py` - Score fusion with alpha weights
-- `retrieval/shadow_mode.py` - A/B comparison for safe rollout
+- `retrieval/shadow_runner.py` - A/B comparison for safe rollout
 
 ### Scoring
 - `scoring/promotion.py` - 7-factor promotion scoring

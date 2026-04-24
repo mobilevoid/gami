@@ -1,6 +1,6 @@
 # GAMI Memory System — Instructions for Claude Code
 
-You have access to GAMI, a persistent memory system. Use it to remember and recall information across sessions.
+You have access to GAMI v2.0, a persistent memory system with advanced retrieval capabilities. Use it to remember and recall information across sessions.
 
 ## Setup (first time only)
 
@@ -18,11 +18,22 @@ Then restart Claude Code to load the MCP tools.
 
 ### When You Learn Something Important
 - Call `memory_remember` with the fact, credential, or project detail
-- Types: `fact`, `credential`, `project`, `preference`, `procedure`
+- Types: `fact`, `credential`, `project`, `preference`, `workflow`
+- Duplicates are auto-detected (ADD/UPDATE/NOOP)
 
 ### When Asked About Past Work
-- Call `memory_recall` — it searches memories, entities, claims, and segments
-- Results include citations back to source material
+- Call `memory_recall` — it searches 8 indexes: memories, entities, claims, relations, workflows, clusters, causal, segments
+- Results include citations and contradiction warnings
+- Use `detail_level`: "summary", "normal", or "full"
+
+### Temporal Queries
+- Use `event_after`/`event_before` to filter by when events happened
+- Use `ingested_after`/`ingested_before` to filter by when learned
+
+### Finding Workflow Patterns
+- Call `memory_suggest_procedure` with a task description
+- Returns workflow patterns extracted from past sessions
+- Workflows consolidate automatically via dream cycle
 
 ### Ingesting New Files
 - Call `ingest_file` with the file path to add content to the knowledge base
@@ -49,12 +60,23 @@ This is critical for data quality. Bad data that persists across sessions compou
 | Want to... | Tool | Example |
 |-----------|------|---------|
 | Search memory | `memory_recall` | query: "PostgreSQL credentials" |
+| Search with time filter | `memory_recall` | query: "server changes", event_after: "2026-01-01" |
 | Store a fact | `memory_remember` | text: "Server IP is 10.0.0.1", memory_type: "fact" |
+| Find workflows | `memory_suggest_procedure` | query: "deploy nginx" |
 | Fix wrong data | `memory_correct` | item_type: "memory", search_text: "old IP", correct_value: "10.0.0.2" |
 | Add a file | `ingest_file` | file_path: "/path/to/doc.md" |
 | Process new content | `dream_haiku` | limit: 50 |
 | Check system | `admin_stats` | (no args) |
 | Review changes | `review_proposals` | action: "list" |
+
+## v2.0 Features
+
+- **Cross-encoder reranking**: 25-40% better precision on retrieval
+- **Multi-index search**: Queries 8 specialized indexes based on intent
+- **Workflow learning**: Extracts patterns from sessions, consolidates naturally
+- **Bi-temporal queries**: Filter by event time vs ingestion time
+- **Contradiction detection**: Warns when results conflict
+- **Auto-consolidation**: Duplicate memories merged automatically
 
 ## Important Notes
 
@@ -63,3 +85,4 @@ This is critical for data quality. Bad data that persists across sessions compou
 - Haiku extraction runs automatically after session save
 - All memories are searchable by hybrid vector + keyword search
 - **When you see wrong data, fix it immediately with `memory_correct`** — proactive correction keeps the knowledge base healthy
+- Workflow memories consolidate over time via the dream cycle
