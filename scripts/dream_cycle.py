@@ -1305,25 +1305,25 @@ def dream_manifold_embeddings(batch_size=50, max_segments=500):
                 segment_data = []
 
                 for seg in segments:
-                    segment_id, text, tenant_id = seg
-                    if not text or len(text) < 10:
+                    segment_id, seg_text, tenant_id = seg
+                    if not seg_text or len(seg_text) < 10:
                         continue
 
-                    texts_topic.append(text)
+                    texts_topic.append(seg_text)
 
                     # Extract claims
-                    claims = embedder._extract_claims(text)
-                    claim_text = " | ".join(claims) if claims else text[:500]
+                    claims = embedder._extract_claims(seg_text)
+                    claim_text = " | ".join(claims) if claims else seg_text[:500]
                     texts_claim.append(claim_text)
 
                     # Extract procedures
-                    steps = embedder._extract_procedure_steps(text)
+                    steps = embedder._extract_procedure_steps(seg_text)
                     proc_text = " → ".join(steps) if steps else ""
-                    texts_procedure.append(proc_text if proc_text else text[:500])
+                    texts_procedure.append(proc_text if proc_text else seg_text[:500])
 
                     segment_data.append({
                         "segment_id": segment_id,
-                        "text": text,
+                        "text": seg_text,
                         "claim_text": claim_text,
                         "proc_text": proc_text if proc_text else None,
                     })
@@ -1401,9 +1401,9 @@ def dream_manifold_embeddings(batch_size=50, max_segments=500):
                             # Get relations involving these entities
                             rel_result = conn.execute(text("""
                                 SELECT relation_type,
-                                    CASE WHEN source_entity_id = ANY(:eids) THEN 'out' ELSE 'in' END
+                                    CASE WHEN from_node_id = ANY(:eids) THEN 'out' ELSE 'in' END
                                 FROM relations
-                                WHERE source_entity_id = ANY(:eids) OR target_entity_id = ANY(:eids)
+                                WHERE from_node_id = ANY(:eids) OR to_node_id = ANY(:eids)
                                 LIMIT 50
                             """), {"eids": entity_ids})
                             rel_rows = rel_result.fetchall()
