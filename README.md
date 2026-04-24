@@ -13,14 +13,14 @@ GAMI is long-term memory for AI agents. While other systems treat memory as flat
 - **Categories cluster on spheres** (like topics on a globe)
 - **Semantics stay searchable** (Euclidean for fast pgvector queries)
 
-Then it *dreams* — a 17-phase background cycle that extracts entities, resolves aliases, learns workflows, and consolidates memories while your agent sleeps.
+Then it *dreams* — an 18-phase background cycle that extracts entities, resolves aliases, learns workflows, and consolidates memories while your agent sleeps.
 
 ## Features
 
 | Feature | What It Does |
 |---------|--------------|
 | **Product Manifold H³² × S¹⁶ × E⁶⁴** | Embeds knowledge in curved space that preserves hierarchy and category structure |
-| **Dream Cycle** | 17 background phases: extract, consolidate, learn workflows, compress, verify |
+| **Dream Cycle** | 18 background phases: extract, consolidate, learn workflows, compress, verify |
 | **Hybrid Search** | Vector + lexical + cross-encoder reranking for 25-40% better precision |
 | **Multi-Index Routing** | Queries automatically route to entities, claims, procedures, or relations |
 | **Universal Integration** | MCP server (27 tools), REST API, or direct Python — works with any agent framework |
@@ -207,7 +207,7 @@ Add hooks to preserve context before compaction:
 
 ## Dream Cycle
 
-The dream cycle runs 17 phases in the background to synthesize and consolidate knowledge:
+The dream cycle runs 18 phases in the background to synthesize and consolidate knowledge:
 
 | Phase | Description |
 |-------|-------------|
@@ -219,6 +219,7 @@ The dream cycle runs 17 phases in the background to synthesize and consolidate k
 | `relate` | Build entity relations |
 | `score` | Importance scoring |
 | `embed` | Generate base 768d embeddings |
+| `manifold_embeddings` | Generate legacy manifold projections |
 | `product_manifold_coords` | Compute H^32 × S^16 × E^64 manifold coordinates |
 | `deep_dream` | Deep synthesis |
 | `auto_approve` | Auto-approve high-confidence items |
@@ -231,7 +232,7 @@ The dream cycle runs 17 phases in the background to synthesize and consolidate k
 
 ## Database Schema
 
-Core tables (37 total):
+Core tables (38 total):
 - `segments` - Text chunks with embeddings
 - `sources` - Source documents
 - `entities` - Extracted entities
