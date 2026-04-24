@@ -318,6 +318,20 @@ Key settings:
 - `GAMI_RERANKER_ENABLED` - Enable cross-encoder reranking
 - `GAMI_API_KEY` - Optional API key for authentication
 
+## Project History
+
+GAMI evolved from research into persistent AI memory systems, driven by frustration with RAG systems that couldn't preserve knowledge structure.
+
+| Date | Milestone |
+|------|-----------|
+| **2024 Q3** | Initial research into hyperbolic embeddings for hierarchical knowledge |
+| **2024 Q4** | First prototype with Poincaré ball embeddings, proof-of-concept MCP server |
+| **2025 Q1** | Multi-tenant architecture, dream cycle concept, hybrid search |
+| **2025 Q2** | Production deployment, 6 tenants, cross-encoder reranking |
+| **2025 Q3** | Workflow extraction, memory consolidation, lossless compression |
+| **2026 Q1** | Product manifold (H³² × S¹⁶ × E⁶⁴), real-time manifold coordinates |
+| **2026 Q2** | Public release, 2M+ segments, 18-phase dream cycle |
+
 ## License
 
 This software is licensed under the **Stalwart LLC Source Available License v1.0**.
