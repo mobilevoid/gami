@@ -65,7 +65,7 @@ TOOL_DEFINITIONS = {
                 "use_product_manifold": {
                     "type": "boolean",
                     "description": "Use true product manifold search (H^32 × S^16 × E^64) when available. Falls back to vector search if coords not populated.",
-                    "default": False,
+                    "default": True,
                 },
             },
             "required": ["query"],
