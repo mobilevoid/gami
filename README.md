@@ -6,12 +6,34 @@
 
 GAMI is a persistent AI memory system designed for use with AI assistants like Claude Code. It provides:
 
+- **Product Manifold Search**: True geometric embeddings using H^32 × S^16 × E^64 (hyperbolic + spherical + Euclidean)
 - **Hybrid Search**: Vector + lexical search with cross-encoder reranking
 - **Multi-Index Retrieval**: Query routing to optimal indexes (entities, claims, procedures, relations)
 - **Dream Cycle**: Background knowledge synthesis (17 phases) for entity extraction, consolidation, and workflow learning
 - **MCP Integration**: 27 tools for AI agent memory access
 - **Multi-Tenant**: Isolated knowledge bases per tenant
 - **Multi-Backend LLM**: Support for vLLM, Ollama, OpenAI, and Anthropic APIs
+
+## Product Manifold Embeddings
+
+GAMI uses TRUE manifold embeddings in a product space H^32 × S^16 × E^64:
+
+| Component | Dimensions | Geometry | Purpose |
+|-----------|------------|----------|---------|
+| Hyperbolic | 32 | Poincaré ball | Hierarchy - parents closer to origin than children |
+| Spherical | 16 | Unit sphere | Categories - same-type items cluster together |
+| Euclidean | 64 | Flat space | Semantics - pgvector-compatible similarity |
+
+**Why this matters:**
+- Hyperbolic space naturally represents hierarchies (a tree with 1000 leaves embeds in 2D without distortion)
+- Spherical space clusters categorical information (entity types, claim modalities)
+- Euclidean space preserves semantic similarity and enables fast pgvector ANN search
+
+**Two-stage retrieval:**
+1. Fast pre-filter using pgvector on 64d Euclidean component
+2. Precise reranking using full manifold geodesic distance
+
+The system automatically falls back to standard vector search when manifold coordinates aren't populated.
 
 ## Quick Start
 
@@ -177,8 +199,8 @@ The dream cycle runs 17 phases in the background to synthesize and consolidate k
 | `verify_memories` | Memory verification |
 | `relate` | Build entity relations |
 | `score` | Importance scoring |
-| `embed` | Generate embeddings |
-| `manifold_embeddings` | Multi-manifold embeddings |
+| `embed` | Generate base 768d embeddings |
+| `product_manifold_coords` | Compute H^32 × S^16 × E^64 manifold coordinates |
 | `deep_dream` | Deep synthesis |
 | `auto_approve` | Auto-approve high-confidence items |
 | `learning` | Pattern learning |
@@ -190,7 +212,7 @@ The dream cycle runs 17 phases in the background to synthesize and consolidate k
 
 ## Database Schema
 
-Core tables (36 total):
+Core tables (37 total):
 - `segments` - Text chunks with embeddings
 - `sources` - Source documents
 - `entities` - Extracted entities
@@ -198,6 +220,7 @@ Core tables (36 total):
 - `relations` - Entity relationships
 - `assistant_memories` - Semantic memories
 - `memory_clusters` - Consolidated abstractions
+- `product_manifold_coords` - H^32 × S^16 × E^64 coordinates
 - `procedures` - Workflow storage
 - `compression_deltas` - Lossless compression facts
 - `causal_relations` - Cause-effect relationships
@@ -207,12 +230,12 @@ Core tables (36 total):
 ```
 gami/
 ├── api/                 # FastAPI application
-│   ├── search/          # Reranker, hybrid search
+│   ├── search/          # Reranker, hybrid search, manifold search
 │   ├── services/        # Business logic
-│   ├── llm/             # Multi-backend LLM providers
+│   ├── llm/             # LLM providers + manifold embeddings
 │   └── routers/         # API endpoints
-├── manifold/            # Multi-manifold retrieval
-│   └── retrieval/       # Query routing, multi-index
+├── manifold/            # Query routing and multi-index retrieval
+│   └── retrieval/       # Query classification, index routing
 ├── mcp_tools/           # MCP server and tools
 ├── scripts/             # Dream cycle, utilities
 ├── storage/sql/         # SQL migrations
