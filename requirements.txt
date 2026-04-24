@@ -54,12 +54,8 @@ croniter>=2.0.0
 # For Anthropic API backend
 # anthropic>=0.18.0
 
-# For cross-encoder reranking and embeddings
-sentence-transformers>=2.2.0
-
-# For true manifold embeddings (hyperbolic/spherical/product spaces)
-geoopt>=0.5.0
-torch>=2.0.0
+# For cross-encoder reranking
+# sentence-transformers>=2.2.0
 
 # For PDF ingestion
 # pymupdf>=1.23.0  # fitz

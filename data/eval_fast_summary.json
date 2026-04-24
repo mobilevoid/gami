@@ -1,0 +1,46 @@
+{
+  "total": 201,
+  "P@1": 0.607,
+  "P@5": 0.692,
+  "P@10": 0.955,
+  "P@20": 0.965,
+  "miss": 0.035,
+  "vec_wins": 76,
+  "lex_wins": 42,
+  "avg_embed_ms": 84,
+  "avg_vec_ms": 9,
+  "avg_lex_ms": 1,
+  "avg_top_sim": 0.6719,
+  "avg_exp_sim": 0.6644,
+  "recommendations": [],
+  "failed": [
+    {
+      "q": "What runs on CT233?",
+      "t": "MEMORY.md"
+    },
+    {
+      "q": "What is the IP of GitLab?",
+      "t": "MEMORY.md"
+    },
+    {
+      "q": "Tell me about GitLab",
+      "t": "MEMORY.md"
+    },
+    {
+      "q": "What runs on CT101?",
+      "t": "MEMORY.md"
+    },
+    {
+      "q": "What is at 100.95.89.107?",
+      "t": "MEMORY.md"
+    },
+    {
+      "q": "Tell me about npm",
+      "t": "MEMORY.md"
+    },
+    {
+      "q": "What are the credentials?",
+      "t": "MEMORY.md"
+    }
+  ]
+}

@@ -2056,7 +2056,7 @@ def dream(duration=None, phase=None, check_idle=False):
         ("score", dream_score),
         ("embed", dream_embed),
         ("manifold_embeddings", dream_manifold_embeddings),
-        ("product_manifold_coords", dream_product_manifold_coords),  # TRUE manifold
+        ("product_manifold_coords", dream_product_manifold_coords),  # TRUE manifold H^32 × S^16 × E^64
         ("deep_dream", dream_deep),
         ("auto_approve", dream_auto_approve),
         # Innovation extension phases
